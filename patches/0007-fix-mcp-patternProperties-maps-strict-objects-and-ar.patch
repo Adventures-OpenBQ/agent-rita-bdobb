@@ -1,0 +1,139 @@
+From 3988993cedb09541961e99f67aea02ff66d78846 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 21:33:19 -0400
+Subject: [PATCH 07/10] fix(mcp): patternProperties maps, strict objects and
+ array bounds
+
+The Charts MCP layout contract still reached the model looser than the
+server enforces it, so create_chart passed Rita's validation and failed
+the server's /definition/layout oneOf six times in one live turn:
+
+- Panels is {patternProperties: {"^P[1-8]$": Panel}}: converted to a
+  free-form record, so the model never saw Panel's fields. Now the key
+  pattern and value schema are kept.
+- additionalProperties: false was ignored, so extra keys passed. Now
+  z.strictObject, and the model gets the rejection in-turn.
+- minItems / maxItems are kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/mcp/schema.ts                 | 31 ++++++++++++++++++++++----
+ tests/unit/src/mcp/schema.test.ts | 37 +++++++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 4 deletions(-)
+
+diff --git a/src/mcp/schema.ts b/src/mcp/schema.ts
+index eb90d7f..2d690c2 100644
+--- a/src/mcp/schema.ts
++++ b/src/mcp/schema.ts
+@@ -19,6 +19,9 @@ type JsonSchemaProp = Record<string, unknown> & {
+   required?: string[];
+   $ref?: string;
+   additionalProperties?: boolean | JsonSchemaProp;
++  patternProperties?: Record<string, JsonSchemaProp>;
++  minItems?: number;
++  maxItems?: number;
+   minLength?: number;
+   maxLength?: number;
+   pattern?: string;
+@@ -126,11 +129,29 @@ function buildSingleTypeSchema(type: string, prop: JsonSchemaProp, defs: Defs, s
+       return z.boolean();
+     case "null":
+       return z.null();
+-    case "array":
+-      return prop.items ? z.array(jsonSchemaToZod(prop.items, defs, seen)) : z.array(z.unknown());
++    case "array": {
++      let a = z.array(prop.items ? jsonSchemaToZod(prop.items, defs, seen) : z.unknown());
++      if (typeof prop.minItems === "number") a = a.min(prop.minItems);
++      if (typeof prop.maxItems === "number") a = a.max(prop.maxItems);
++      return a;
++    }
+     case "object": {
+       if (!prop.properties) {
+-        // A map (e.g. panel id -> panel): its value schema is the part the model needs.
++        // A map (e.g. panel id -> panel): its key and value schemas are the
++        // parts the model needs, given by patternProperties or additionalProperties.
++        const patterns = Object.entries(prop.patternProperties ?? {});
++        if (patterns.length > 0) {
++          const values = patterns.map(([, v]) => v);
++          let key = z.string();
++          if (patterns.length === 1) {
++            try {
++              key = key.regex(new RegExp(patterns[0][0]));
++            } catch {
++              // Not an ECMA-262 pattern: leave it to the server to enforce.
++            }
++          }
++          return z.record(key, buildUnion(values, undefined, defs, seen));
++        }
+         const values = prop.additionalProperties;
+         return z.record(
+           z.string(),
+@@ -144,7 +165,9 @@ function buildSingleTypeSchema(type: string, prop: JsonSchemaProp, defs: Defs, s
+         if (!required.has(key)) s = s.optional();
+         shape[key] = s;
+       }
+-      return z.object(shape);
++      // Servers that forbid extra keys reject them; z.object would silently
++      // accept them, so the model never learns why the call failed.
++      return prop.additionalProperties === false ? z.strictObject(shape) : z.object(shape);
+     }
+     default:
+       return z.unknown();
+diff --git a/tests/unit/src/mcp/schema.test.ts b/tests/unit/src/mcp/schema.test.ts
+index 4638511..4d85d59 100644
+--- a/tests/unit/src/mcp/schema.test.ts
++++ b/tests/unit/src/mcp/schema.test.ts
+@@ -238,6 +238,16 @@ describe("buildToolInputSchema — array", () => {
+     expect(() => s.parse({ xs: [1] })).toThrow();
+   });
+ 
++  it("keeps minItems / maxItems", () => {
++    const s = buildToolInputSchema({
++      properties: { xs: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 2 } },
++      required: ["xs"],
++    });
++    expect(s.parse({ xs: ["a"] })).toEqual({ xs: ["a"] });
++    expect(() => s.parse({ xs: [] })).toThrow();
++    expect(() => s.parse({ xs: ["a", "b", "c"] })).toThrow();
++  });
++
+   it("without items falls back to z.array(z.unknown())", () => {
+     const s = buildToolInputSchema({
+       properties: { xs: { type: "array" } },
+@@ -280,6 +290,33 @@ describe("buildToolInputSchema — nested object", () => {
+     expect(() => s.parse({ panels: { P1: {} } })).toThrow();
+   });
+ 
++  it("a patternProperties map validates both keys and values", () => {
++    const s = buildToolInputSchema({
++      properties: {
++        panels: {
++          type: "object",
++          patternProperties: { "^P[1-8]$": { type: "object", properties: { top: { type: "number" } }, required: ["top"] } },
++          additionalProperties: false,
++        },
++      },
++      required: ["panels"],
++    });
++    expect(s.parse({ panels: { P1: { top: 0 } } })).toEqual({ panels: { P1: { top: 0 } } });
++    expect(() => s.parse({ panels: { P1: { height: "100%" } } })).toThrow();
++    expect(() => s.parse({ panels: { main: { top: 0 } } })).toThrow();
++  });
++
++  it("additionalProperties: false rejects unknown keys instead of stripping them", () => {
++    const s = buildToolInputSchema({
++      properties: {
++        style: { type: "object", properties: { width: { type: "number" } }, required: ["width"], additionalProperties: false },
++      },
++      required: ["style"],
++    });
++    expect(s.parse({ style: { width: 1 } })).toEqual({ style: { width: 1 } });
++    expect(() => s.parse({ style: { width: 1, color: "#fff" } })).toThrow();
++  });
++
+   it("without properties falls back to z.record(z.string(), z.unknown())", () => {
+     const s = buildToolInputSchema({
+       properties: { meta: { type: "object" } },
+-- 
+2.54.0 (Apple Git-157)
+

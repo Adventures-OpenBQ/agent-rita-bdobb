@@ -1,0 +1,3 @@
+# The upstream Rita source this recipe builds. Columns: name url sha.
+# The SHA is the commit the BDOBB v6.0.0 image was built from; patches/ apply on top of it.
+rita https://github.com/openbq-org/agent-rita.git f673c1fbeeeedfdbf4a253031d85eb8e96538924

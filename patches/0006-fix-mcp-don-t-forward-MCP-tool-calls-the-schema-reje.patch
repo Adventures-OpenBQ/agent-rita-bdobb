@@ -1,0 +1,112 @@
+From 37922f5080fb0ff7d373470431b767b77f27e0a1 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 21:23:21 -0400
+Subject: [PATCH 06/10] fix(mcp): don't forward MCP tool calls the schema
+ rejected
+
+A tool call the AI SDK marks invalid (input failed the converted schema)
+still satisfied the MCP stopCondition and was picked by the round-trip
+dispatch, so Rita emitted executeAgentTool with input it had just
+rejected. Live, that sent cursor:"" and malformed chart layouts to the
+Charts MCP server eight times in one turn, each costing a client round.
+
+Skip invalid calls in both places: the step continues, the SDK returns
+the validation error to the model, and only a valid retry is forwarded.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/agent/loop.ts                             |  2 +-
+ src/mcp/factory.ts                            |  5 ++-
+ .../agent-loop/round-trips.test.ts            | 43 +++++++++++++++++++
+ 3 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index e1216ec..4837da8 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -1400,7 +1400,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+ 
+       // --- MCP tool round-trip ---
+       const mcpToolCall = mcpToolsResult
+-        ? lastStep?.toolCalls.find((tc) => mcpToolNames!.has(tc.toolName))
++        ? lastStep?.toolCalls.find((tc) => tc.invalid !== true && mcpToolNames!.has(tc.toolName))
+         : undefined;
+ 
+       if (mcpToolCall) {
+diff --git a/src/mcp/factory.ts b/src/mcp/factory.ts
+index 35bffae..25fd620 100644
+--- a/src/mcp/factory.ts
++++ b/src/mcp/factory.ts
+@@ -84,7 +84,10 @@ export function makeMcpTools(agentTools: AgentTool[]): McpToolsResult {
+   const stopCondition: StopCondition<ToolSet> = ({ steps }) => {
+     const lastStep = steps.at(-1);
+     if (!lastStep) return false;
+-    return lastStep.toolCalls.some((tc) => mcpToolNames.has(tc.toolName));
++    // A schema-rejected call must not end the step: the SDK hands its
++    // validation error back to the model, which retries within this turn
++    // instead of spending a client round-trip on input the server refuses.
++    return lastStep.toolCalls.some((tc) => tc.invalid !== true && mcpToolNames.has(tc.toolName));
+   };
+ 
+   return {
+diff --git a/tests/integration/agent-loop/round-trips.test.ts b/tests/integration/agent-loop/round-trips.test.ts
+index 5107fa3..0365bf4 100644
+--- a/tests/integration/agent-loop/round-trips.test.ts
++++ b/tests/integration/agent-loop/round-trips.test.ts
+@@ -15,6 +15,7 @@ import {
+   llmCallsTool,
+   llmEmitsText,
+   makeMockLlm,
++  makeSequencedMockLlm,
+ } from "../../helpers/mock-llm";
+ import { collectGenerator } from "../../helpers/sse-reader";
+ import { clearAllModuleState } from "../../helpers/clear-state";
+@@ -144,3 +145,45 @@ describe("citations — forwarded across round-trips via extra_state.intermediat
+     expect(list.find((c) => c.id === "stable-id-1")).toBeDefined();
+   });
+ });
++
++describe("MCP tool input rejected by schema — corrected in-turn, never forwarded", () => {
++  it("feeds the validation error back to the model and forwards only the valid retry", async () => {
++    const events = await collectGenerator(
++      runAgentLoop({
++        request: {
++          messages: [{ role: "human", content: "list chart sources" }],
++          tools: [
++            {
++              name: "list_chart_capabilities",
++              server_id: "charts",
++              url: "http://localhost:6910/charts/mcp",
++              description: "List sources",
++              input_schema: {
++                properties: { cursor: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] } },
++                required: ["cursor"],
++              },
++            },
++          ],
++        } as unknown as QueryRequest,
++        rawModelId: "openai:gpt-4o-mini",
++        // First attempt violates minLength; the model sees the rejection and retries.
++        model: makeSequencedMockLlm([
++          llmCallsTool("list_chart_capabilities", { cursor: "" }),
++          llmCallsTool("list_chart_capabilities", { cursor: null }),
++        ]),
++        allWidgets: [],
++        workspaceState: null,
++        generativeUiEnabled: false,
++        conversationId: "invalid-mcp-1",
++      }),
++    );
++    const forwarded = events.filter(
++      (e) =>
++        e.event === "copilotFunctionCall" &&
++        (e.data as { function?: string }).function === "execute_agent_tool",
++    );
++    expect(forwarded).toHaveLength(1);
++    const args = (forwarded[0].data as { input_arguments: { parameters: Record<string, unknown> } }).input_arguments;
++    expect(args.parameters).toEqual({ cursor: null });
++  });
++});
+-- 
+2.54.0 (Apple Git-157)
+

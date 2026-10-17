@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 07:56:34 -0400
+Subject: [PATCH] fix(routes): answer a non-JSON body with 400, not 500
+
+/v1/query and the five JSON /v1/generate/* routes awaited c.req.json()
+without a catch, and the server has no onError, so a body that is not
+JSON escaped as Hono's default 500 "Internal Server Error". Catch the
+parse error and hand undefined to the existing zod check, which answers
+with the standard 400 envelope ({error: "Invalid request", details}).
+widget_info/file reads formData and is unchanged.
+
+Tests: a malformed-body case for /v1/query and a loop over the five
+generate routes; 0/6 before, 6/6 after, full suite 1006/1006.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/routes/generate/chat-title.ts         |  2 +-
+ src/routes/generate/code.ts               |  2 +-
+ src/routes/generate/dashboard-title.ts    |  2 +-
+ src/routes/generate/enhance-prompt.ts     |  2 +-
+ src/routes/generate/widget-info.ts        |  2 +-
+ src/routes/query.ts                       |  2 +-
+ tests/integration/routes/generate.test.ts | 22 ++++++++++++++++++++++
+ tests/integration/routes/query.test.ts    | 12 ++++++++++++
+ 8 files changed, 40 insertions(+), 6 deletions(-)
+
+diff --git a/src/routes/generate/chat-title.ts b/src/routes/generate/chat-title.ts
+index b374b6d..3ce3d3f 100644
+--- a/src/routes/generate/chat-title.ts
++++ b/src/routes/generate/chat-title.ts
+@@ -13,7 +13,7 @@ const ChatTitleSchema = z.object({
+ export const chatTitleRouter = new Hono();
+ 
+ chatTitleRouter.post("/v1/generate/chat/title", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = ChatTitleSchema.safeParse(raw);
+   if (!parsed.success) {
+     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400);
+diff --git a/src/routes/generate/code.ts b/src/routes/generate/code.ts
+index 13c60c5..6340a12 100644
+--- a/src/routes/generate/code.ts
++++ b/src/routes/generate/code.ts
+@@ -18,7 +18,7 @@ const GenerateCodeSchema = z.object({
+ export const codeRouter = new Hono();
+ 
+ codeRouter.post("/v1/generate/code", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = GenerateCodeSchema.safeParse(raw);
+   if (!parsed.success) {
+     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400);
+diff --git a/src/routes/generate/dashboard-title.ts b/src/routes/generate/dashboard-title.ts
+index 80c7f56..c607aab 100644
+--- a/src/routes/generate/dashboard-title.ts
++++ b/src/routes/generate/dashboard-title.ts
+@@ -18,7 +18,7 @@ const DashboardTitleSchema = z.object({
+ export const dashboardTitleRouter = new Hono();
+ 
+ dashboardTitleRouter.post("/v1/generate/dashboard/title", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = DashboardTitleSchema.safeParse(raw);
+   if (!parsed.success) {
+     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400);
+diff --git a/src/routes/generate/enhance-prompt.ts b/src/routes/generate/enhance-prompt.ts
+index 2778a68..1b3bbb1 100644
+--- a/src/routes/generate/enhance-prompt.ts
++++ b/src/routes/generate/enhance-prompt.ts
+@@ -37,7 +37,7 @@ function extractWidgetNames(widgets: unknown): string[] {
+ export const enhancePromptRouter = new Hono();
+ 
+ enhancePromptRouter.post("/v1/enhance_prompt", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = EnhancePromptSchema.safeParse(raw);
+   if (!parsed.success) {
+     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400);
+diff --git a/src/routes/generate/widget-info.ts b/src/routes/generate/widget-info.ts
+index abe7f13..2808e84 100644
+--- a/src/routes/generate/widget-info.ts
++++ b/src/routes/generate/widget-info.ts
+@@ -28,7 +28,7 @@ const WidgetInfoSchema = z.object({
+ export const widgetInfoRouter = new Hono();
+ 
+ widgetInfoRouter.post("/v1/generate/widget_info", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = WidgetInfoSchema.safeParse(raw);
+   if (!parsed.success) {
+     return c.json({ error: "Invalid request", details: parsed.error.issues }, 400);
+diff --git a/src/routes/query.ts b/src/routes/query.ts
+index 98af055..4005182 100644
+--- a/src/routes/query.ts
++++ b/src/routes/query.ts
+@@ -89,7 +89,7 @@ function parseWorkspaceState(raw: unknown): WorkspaceState | null {
+ export const queryRouter = new Hono();
+ 
+ queryRouter.post("/v1/query", async (c) => {
+-  const raw = await c.req.json();
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> zod 400 below, not a 500
+   const parsed = QueryRequestSchema.safeParse(raw);
+   if (!parsed.success) {
+     logger.error("Invalid request", { issues: parsed.error.issues });
+diff --git a/tests/integration/routes/generate.test.ts b/tests/integration/routes/generate.test.ts
+index 341e856..49bb0f5 100644
+--- a/tests/integration/routes/generate.test.ts
++++ b/tests/integration/routes/generate.test.ts
+@@ -258,3 +258,25 @@ describe("/v1/generate/code", () => {
+     expect(res.status).toBe(400);
+   });
+ });
++
++describe("/v1/generate/* — malformed (non-JSON) body", () => {
++  for (const path of [
++    "/v1/generate/chat/title",
++    "/v1/generate/dashboard/title",
++    "/v1/enhance_prompt",
++    "/v1/generate/widget_info",
++    "/v1/generate/code",
++  ]) {
++    it(`${path}: 400, not 500`, async () => {
++      const res = await app().request(path, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: "{not json",
++      });
++      expect(res.status).toBe(400);
++      const body = (await res.json()) as { error: string; details: unknown[] };
++      expect(body.error).toBe("Invalid request");
++      expect(body.details.length).toBeGreaterThan(0);
++    });
++  }
++});
+diff --git a/tests/integration/routes/query.test.ts b/tests/integration/routes/query.test.ts
+index b3ef9d8..10ede6f 100644
+--- a/tests/integration/routes/query.test.ts
++++ b/tests/integration/routes/query.test.ts
+@@ -83,4 +83,16 @@ describe("POST /v1/query — validation", () => {
+     });
+     expect(res.status).toBe(400);
+   });
++
++  it("400, not 500, on a malformed (non-JSON) body", async () => {
++    const res = await app().request("/v1/query", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: "{not json",
++    });
++    expect(res.status).toBe(400);
++    const body = (await res.json()) as { error: string; details: unknown[] };
++    expect(body.error).toBe("Invalid request");
++    expect(body.details.length).toBeGreaterThan(0);
++  });
+ });
+-- 
+2.54.0 (Apple Git-157)
+

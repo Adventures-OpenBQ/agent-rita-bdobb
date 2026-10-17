@@ -1,0 +1,17 @@
+agent-rita-bdobb
+Copyright 2026 SecretoftheUniverse.com LLC.
+
+Repository-authored files (scripts, sources.lock, rita.env.example and
+documentation) are licensed under Apache-2.0; see LICENSE.
+
+Third-party and copied material:
+
+- patches/*.patch: changes to OpenBB agent-rita (MIT, Copyright (c) 2026
+  OpenBB), copied verbatim from Adventures-OpenBQ/agent-rita v6.0.0
+  patches/rita/, which exported them with git format-patch from
+  bdobb-dev/agent-rita. Patched files stay under agent-rita's MIT license.
+
+Images built by scripts/build.sh are built on your machine and are not
+distributed from this repository. They contain openbq-org/agent-rita
+f673c1fbeeeedfdbf4a253031d85eb8e96538924 (MIT) with these patches, and its
+dependencies under their own licenses.

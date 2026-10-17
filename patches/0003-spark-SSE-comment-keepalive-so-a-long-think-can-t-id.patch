@@ -1,0 +1,91 @@
+From dfcd74a32b58ace7b8cf6a63406293a6ff67f41f Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 08:30:43 -0400
+Subject: [PATCH 03/10] spark: SSE comment keepalive so a long think can't idle
+ out
+
+sseResponse() only wrote bytes when the generator yielded, so the stream
+was silent for the entire pre-first-token window. On qwen3.6-35b that
+window is the model's <think> phase, which grows with tool chains and
+context, and any idle read timeout between client and Rita kills the
+request before a single token arrives.
+
+Emits a ":" comment every 15s while the stream is open. Comment lines are
+ignored by every compliant SSE parser -- bdobb's own parser drops dataless
+blocks as null -- so no client changes and no protocol change.
+
+The timer is cleared through finish() on all three terminal paths (done,
+error, cancel) so it cannot outlive the stream, and enqueue is wrapped
+because the controller may already be closed when a client disconnects.
+
+Verified against the redeployed container: a 24.9s request emitted one
+keepalive at 15.1s alongside 1100 normal events.
+
+Fixes idle read timeouts only. A total request-duration cap, or a timeout
+on Rita's own upstream connection to vLLM, is unaffected.
+---
+ src/protocol/stream.ts | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/src/protocol/stream.ts b/src/protocol/stream.ts
+index 0242a8c..e62c2e6 100644
+--- a/src/protocol/stream.ts
++++ b/src/protocol/stream.ts
+@@ -70,15 +70,35 @@ export function sseResponse(
+ 
+   let closed = false;
+   const finalText = { chunks: [] as string[] };
++  let ka: ReturnType<typeof setInterval> | undefined;
++  const finish = () => {
++    closed = true;
++    clearInterval(ka);
++  };
+ 
+   const readable = new ReadableStream({
++    start(controller) {
++      // Keepalive. Without it the stream emits nothing for the whole thinking
++      // phase -- with reasoning on by default that is the entire wait before
++      // the first token -- and an idle read timeout upstream kills the request
++      // mid-think. ":" comment lines are ignored by every compliant SSE parser,
++      // so this needs no client change.
++      ka = setInterval(() => {
++        if (closed) return;
++        try {
++          controller.enqueue(encoder.encode(":\n\n"));
++        } catch {
++          finish();
++        }
++      }, 15_000);
++    },
+     async pull(controller) {
+       if (closed) return;
+       try {
+         const { value, done } = await gen.next();
+         if (closed) return;
+         if (done) {
+-          closed = true;
++          finish();
+           flushTraceFinal(finalText);
+           controller.close();
+           return;
+@@ -88,7 +108,7 @@ export function sseResponse(
+         controller.enqueue(encoder.encode(line));
+       } catch (e) {
+         if (closed) return;
+-        closed = true;
++        finish();
+         logger.error("Stream error", { error: e });
+         const errMsg = e instanceof Error ? e.message : String(e);
+         const errorEvent: SSEEvent = {
+@@ -105,7 +125,7 @@ export function sseResponse(
+       }
+     },
+     cancel() {
+-      closed = true;
++      finish();
+       flushTraceFinal(finalText);
+       gen.return(undefined);
+     },
+-- 
+2.54.0 (Apple Git-157)
+

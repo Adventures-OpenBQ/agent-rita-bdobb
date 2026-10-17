@@ -1,0 +1,481 @@
+From 835649130fd73f3631285c20a18aac61ae7c10aa Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 11:24:02 -0400
+Subject: [PATCH] Merge branch 'fix/agent-tool-queue' into
+ fix/agent-tool-queue-main
+
+# Conflicts:
+#	src/agent/loop.ts
+
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 4837da8..f886beb 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -35,7 +35,7 @@ import { extractWidgetItems, type WidgetItem } from "../widgets/parse";
+ import { analyzeTable, sanitizeName, sanitizeRowKeys, type TableInfo } from "../sql/loader";
+ import { makeMcpTools, type McpToolsResult } from "../mcp/factory";
+ import { type McpCitation } from "../mcp/results";
+-import { readExtraState, COMPUTE_PERMANENTLY_UNAVAILABLE } from "../protocol/extra-state";
++import { readExtraState, COMPUTE_PERMANENTLY_UNAVAILABLE, type ExtraState } from "../protocol/extra-state";
+ import { buildMessages } from "./messages";
+ import { injectFromReboot, injectWidgetData, type RoundTripContext } from "./round-trip";
+ import { getCachedRows } from "./row-cache";
+@@ -827,7 +827,8 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+       const rebootOut = yield* injectFromReboot(lastMessage as ToolMessage, ctx);
+       const hasQueuedContinuation =
+         (rebootExtra.pending_widget_data_requests?.length ?? 0) > 0 ||
+-        (rebootExtra.pending_bridge_calls?.length ?? 0) > 0;
++        (rebootExtra.pending_bridge_calls?.length ?? 0) > 0 ||
++        (rebootExtra.pending_agent_tool_calls?.length ?? 0) > 0;
+       if (rebootOut.terminal && !hasQueuedContinuation) {
+         yield* emitPendingArtifactsBeforeExit();
+         if (rebootOut.terminalMessage) {
+@@ -956,6 +957,142 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+     const searchTool = makeSearchWidgetsTool(tieredWidgets);
+     const createAppTool = makeCreateAppTool({ allWidgets, artifactQueue });
+ 
++    // Emits one execute_agent_tool round-trip: decoration (execute_code's
++    // table delta, the document delta) runs HERE, at emission, so a queued
++    // call ships what the sandbox lacks at the moment it actually runs.
++    // `queue` is every call still owed after this one (pending_agent_tool_calls).
++    async function* emitAgentToolCall(
++      toolName: string,
++      input: Record<string, unknown>,
++      queue: NonNullable<ExtraState["pending_agent_tool_calls"]>,
++    ): AsyncGenerator<SSEEvent> {
++      const entry = mcpEntryBySanitized!.get(toolName)!;
++      const params = { ...input };
++      delete params.display_summary;
++
++      // Decoration: ship pendingTables delta to `execute_code` (Daytona-
++      // backed). The SQL family runs in-process on the agent now, so it
++      // reads `pendingTables` directly through the tool factory's closure
++      // — no decoration, no x-agentrita-tables on the wire.
++      //
++      // Delta-ship: `tablesShipped` tracks what the sandbox already has.
++      // It's restored on re-POST from `extra_state.compute_tables_shipped`
++      // and invalidated entry-by-entry by `setPendingTable` whenever
++      // pendingTables is overwritten (widget re-fetch, follow-up
++      // sqlite_table). The sandbox-id guard in the re-POST block above
++      // clears the whole set when the Daytona sandbox is recreated.
++      if (isCodeTool(entry.toolName)) {
++        if (!conversationId) {
++          logger.warn(
++            `execute_code ${entry.toolName} called without X-Trace-Id — sandbox keying will fail`,
++          );
++        }
++        params["x-agentrita-conversation-id"] = conversationId;
++        const toShip: Record<string, Record<string, unknown>[]> = {};
++        for (const [name, rows] of pendingTables.entries()) {
++          if (rows.length === 0) continue;
++          if (tablesShipped.has(name)) continue;
++          // Ship sanitized keys: the model only knows the sanitized column
++          // names (inventory, execute_sql), so the sandbox schema must match.
++          toShip[name] = sanitizeRowKeys(name, rows);
++        }
++        if (Object.keys(toShip).length > 0) {
++          params["x-agentrita-tables"] = toShip;
++          for (const name of Object.keys(toShip)) tablesShipped.add(name);
++        }
++        logger.info(
++          `Decoration tool=${entry.toolName} pending=${pendingTables.size} shipping=${Object.keys(toShip).length} alreadyShipped=${tablesShipped.size - Object.keys(toShip).length}`,
++          {
++            tool: entry.toolName,
++            conversationId,
++            pendingTableNames: [...pendingTables.keys()],
++            shippingNames: Object.keys(toShip),
++          },
++        );
++      }
++
++      // Document RAG decoration. Ship the delta of uploaded docs not yet
++      // in the MCP server's per-conversation store. After the call,
++      // every shipped id is recorded so subsequent calls in this chat
++      // skip re-shipping. The MCP server keys its store by
++      // conversationId + doc id (sha-stable), so re-shipping is harmless
++      // but wasteful.
++      if (isDocumentTool(entry.toolName)) {
++        if (!conversationId) {
++          logger.warn(
++            `${entry.toolName} called without X-Trace-Id — doc store keying will fail`,
++          );
++        }
++        params["x-agentrita-conversation-id"] = conversationId;
++        const docDelta = buildDocumentsDecoration(pendingDocuments, documentsShipped);
++        if (docDelta) {
++          params["x-agentrita-documents"] = docDelta;
++          for (const d of docDelta) documentsShipped.add(d.id);
++        }
++        logger.info(
++          `Doc decoration tool=${entry.toolName} pending=${pendingDocuments.size} shipping=${docDelta?.length ?? 0} alreadyShipped=${documentsShipped.size - (docDelta?.length ?? 0)}`,
++          {
++            tool: entry.toolName,
++            conversationId,
++            pendingDocCount: pendingDocuments.size,
++            shippingIds: docDelta?.map((d) => d.id) ?? [],
++          },
++        );
++      }
++
++      const extraState = await buildContinuationExtraState();
++    if (queue.length > 0) extraState.pending_agent_tool_calls = queue;
++
++      // Log the outbound emission. We compute payload bytes by serializing
++      // params once here (cheap relative to the network/SSE cost). This is
++      // the only place agent-side code can see what's actually leaving for
++      // the workspace → MCP wire, so it's worth a log line per call.
++      const paramsBytes = Buffer.byteLength(JSON.stringify(params), "utf-8");
++      const tablesParam = params["x-agentrita-tables"];
++      const decoratedTables = tablesParam && typeof tablesParam === "object"
++        ? Object.keys(tablesParam as Record<string, unknown>)
++        : [];
++      logger.info("Emitting executeAgentTool", {
++        conversationId,
++        tool: entry.toolName,
++        serverId: entry.serverId,
++        paramsKeys: Object.keys(params),
++        paramsBytes,
++        decoratedTables,
++        tablesShippedTotal: tablesShipped.size,
++        extraStateKeys: Object.keys(extraState),
++      });
++
++      for (const ev of sink.flushTail()) yield ev;
++      yield* emitPendingArtifactsBeforeExit();
++      yield executeAgentTool(entry.serverId, entry.toolName, params, extraState);
++    }
++
++    // Drain queued execute_agent_tool calls one per re-POST, before the model
++    // runs: the client executed the previous one and re-POSTed its result
++    // (injected above). Same rule as pending_bridge_calls: the queue round-trips
++    // through the client, so keep only names that are real MCP tools this turn.
++    if (isRebootToolTurn && mcpEntryBySanitized) {
++      const echoed = rebootExtra.pending_agent_tool_calls;
++      const queued = (Array.isArray(echoed) ? echoed : []).filter((c) => {
++        const ok =
++          typeof c?.tool_name === "string" &&
++          mcpEntryBySanitized.has(c.tool_name) &&
++          c.input !== null && typeof c.input === "object" && !Array.isArray(c.input);
++        if (!ok) logger.warn("Dropping queued agent tool call — not an MCP tool this turn", { tool: c?.tool_name });
++        return ok;
++      });
++      if (queued.length > 0) {
++        const [next, ...remaining] = queued;
++        logger.info("Draining queued agent tool call", {
++          emitting: next.tool_name,
++          remaining: remaining.map((c) => c.tool_name),
++        });
++        yield* emitAgentToolCall(next.tool_name, next.input ?? {}, remaining);
++        return;
++      }
++    }
++
+     for (let loopIdx = 0; loopIdx < MAX_LOOPS; loopIdx++) {
+       // Artifacts queued before the stream (injectFromReboot processing the
+       // re-POSTed MCP result) move to the deferred set now, so the in-stream
+@@ -1399,110 +1536,30 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+       }
+ 
+       // --- MCP tool round-trip ---
+-      const mcpToolCall = mcpToolsResult
+-        ? lastStep?.toolCalls.find((tc) => tc.invalid !== true && mcpToolNames!.has(tc.toolName))
+-        : undefined;
+-
+-      if (mcpToolCall) {
+-        const entry = mcpToolsResult!.entries.find((e) => e.sanitizedName === mcpToolCall.toolName)!;
+-        const params = { ...((mcpToolCall.input ?? {}) as Record<string, unknown>) };
+-        delete params.display_summary;
+-
+-        // Decoration: ship pendingTables delta to `execute_code` (Daytona-
+-        // backed). The SQL family runs in-process on the agent now, so it
+-        // reads `pendingTables` directly through the tool factory's closure
+-        // — no decoration, no x-agentrita-tables on the wire.
+-        //
+-        // Delta-ship: `tablesShipped` tracks what the sandbox already has.
+-        // It's restored on re-POST from `extra_state.compute_tables_shipped`
+-        // and invalidated entry-by-entry by `setPendingTable` whenever
+-        // pendingTables is overwritten (widget re-fetch, follow-up
+-        // sqlite_table). The sandbox-id guard in the re-POST block above
+-        // clears the whole set when the Daytona sandbox is recreated.
+-        if (isCodeTool(entry.toolName)) {
+-          if (!conversationId) {
+-            logger.warn(
+-              `execute_code ${entry.toolName} called without X-Trace-Id — sandbox keying will fail`,
+-            );
+-          }
+-          params["x-agentrita-conversation-id"] = conversationId;
+-          const toShip: Record<string, Record<string, unknown>[]> = {};
+-          for (const [name, rows] of pendingTables.entries()) {
+-            if (rows.length === 0) continue;
+-            if (tablesShipped.has(name)) continue;
+-            // Ship sanitized keys: the model only knows the sanitized column
+-            // names (inventory, execute_sql), so the sandbox schema must match.
+-            toShip[name] = sanitizeRowKeys(name, rows);
+-          }
+-          if (Object.keys(toShip).length > 0) {
+-            params["x-agentrita-tables"] = toShip;
+-            for (const name of Object.keys(toShip)) tablesShipped.add(name);
+-          }
+-          logger.info(
+-            `Decoration tool=${entry.toolName} pending=${pendingTables.size} shipping=${Object.keys(toShip).length} alreadyShipped=${tablesShipped.size - Object.keys(toShip).length}`,
+-            {
+-              tool: entry.toolName,
+-              conversationId,
+-              pendingTableNames: [...pendingTables.keys()],
+-              shippingNames: Object.keys(toShip),
+-            },
+-          );
+-        }
++      // One copilotFunctionCall per round-trip: emit the step's first MCP call
++      // now and QUEUE the rest (pending_agent_tool_calls), drained one per
++      // re-POST above. Dropping them lost model-decided calls (bdobb-v2 #326).
++      const mcpToolCalls = mcpToolsResult
++        ? (lastStep?.toolCalls.filter(
++            // A call the AI SDK rejected against its schema (invalid) is
++            // logged above and never forwarded, first or queued.
++            (tc) => tc.invalid !== true && mcpToolNames!.has(tc.toolName),
++          ) ?? [])
++        : [];
+ 
+-        // Document RAG decoration. Ship the delta of uploaded docs not yet
+-        // in the MCP server's per-conversation store. After the call,
+-        // every shipped id is recorded so subsequent calls in this chat
+-        // skip re-shipping. The MCP server keys its store by
+-        // conversationId + doc id (sha-stable), so re-shipping is harmless
+-        // but wasteful.
+-        if (isDocumentTool(entry.toolName)) {
+-          if (!conversationId) {
+-            logger.warn(
+-              `${entry.toolName} called without X-Trace-Id — doc store keying will fail`,
+-            );
+-          }
+-          params["x-agentrita-conversation-id"] = conversationId;
+-          const docDelta = buildDocumentsDecoration(pendingDocuments, documentsShipped);
+-          if (docDelta) {
+-            params["x-agentrita-documents"] = docDelta;
+-            for (const d of docDelta) documentsShipped.add(d.id);
+-          }
+-          logger.info(
+-            `Doc decoration tool=${entry.toolName} pending=${pendingDocuments.size} shipping=${docDelta?.length ?? 0} alreadyShipped=${documentsShipped.size - (docDelta?.length ?? 0)}`,
+-            {
+-              tool: entry.toolName,
+-              conversationId,
+-              pendingDocCount: pendingDocuments.size,
+-              shippingIds: docDelta?.map((d) => d.id) ?? [],
+-            },
+-          );
++      if (mcpToolCalls.length > 0) {
++        const [first, ...deferred] = mcpToolCalls;
++        const queue = deferred.map((tc) => ({
++          tool_name: tc.toolName,
++          input: (tc.input ?? {}) as Record<string, unknown>,
++        }));
++        if (queue.length > 0) {
++          logger.info("Queueing extra agent tool calls for sequential drain", {
++            emitted: first.toolName,
++            queued: queue.map((c) => c.tool_name),
++          });
+         }
+-
+-        const extraState = await buildContinuationExtraState();
+-
+-        // Log the outbound emission. We compute payload bytes by serializing
+-        // params once here (cheap relative to the network/SSE cost). This is
+-        // the only place agent-side code can see what's actually leaving for
+-        // the workspace → MCP wire, so it's worth a log line per call.
+-        const paramsBytes = Buffer.byteLength(JSON.stringify(params), "utf-8");
+-        const tablesParam = params["x-agentrita-tables"];
+-        const decoratedTables = tablesParam && typeof tablesParam === "object"
+-          ? Object.keys(tablesParam as Record<string, unknown>)
+-          : [];
+-        logger.info("Emitting executeAgentTool", {
+-          conversationId,
+-          tool: entry.toolName,
+-          serverId: entry.serverId,
+-          paramsKeys: Object.keys(params),
+-          paramsBytes,
+-          decoratedTables,
+-          tablesShippedTotal: tablesShipped.size,
+-          extraStateKeys: Object.keys(extraState),
+-        });
+-
+-        for (const ev of sink.flushTail()) yield ev;
+-        yield* emitPendingArtifactsBeforeExit();
+-        yield executeAgentTool(entry.serverId, entry.toolName, params, extraState);
++        yield* emitAgentToolCall(first.toolName, (first.input ?? {}) as Record<string, unknown>, queue);
+         return;
+       }
+ 
+diff --git a/src/protocol/extra-state.ts b/src/protocol/extra-state.ts
+index 7f3ebe2..43f4ea8 100644
+--- a/src/protocol/extra-state.ts
++++ b/src/protocol/extra-state.ts
+@@ -33,6 +33,19 @@ export interface ExtraState {
+     function: string;
+     input_arguments: Record<string, unknown>;
+   }>;
++  /**
++   * MCP / client-tool calls (execute_agent_tool) the model issued in one step
++   * beyond the first. Same one-per-re-POST drain as pending_bridge_calls:
++   * the first is emitted, the rest queue here and are emitted one per re-POST
++   * before the model runs again. Without it every call after the first was
++   * dropped, and the model re-issued some of them later (bdobb-v2 #326: three
++   * set_markdown_content calls, one executed, one card written four times).
++   * `tool_name` is the sanitized (model-facing) name.
++   */
++  pending_agent_tool_calls?: Array<{
++    tool_name: string;
++    input: Record<string, unknown>;
++  }>;
+   loaded_skill_slugs?: string[];
+   sql_query?: string;
+   sql_artifact_uuid?: string;
+diff --git a/tests/integration/agent-loop/agent-tool-queue.test.ts b/tests/integration/agent-loop/agent-tool-queue.test.ts
+new file mode 100644
+index 0000000..e6d303d
+--- /dev/null
++++ b/tests/integration/agent-loop/agent-tool-queue.test.ts
+@@ -0,0 +1,143 @@
++/**
++ * Tier 2 — several MCP / client-tool calls in one model step (bdobb-v2 #326).
++ *
++ * The client executes exactly one copilotFunctionCall per re-POST. The first
++ * execute_agent_tool is emitted; the rest ride extra_state as
++ * pending_agent_tool_calls and drain one per re-POST before the model runs
++ * again — none silently dropped, each emitted once, in the model's order.
++ */
++
++import { describe, it, expect, beforeEach } from "bun:test";
++import { runAgentLoop, _resetWidgetDataCache } from "../../../src/agent/loop";
++import type { AgentTool, QueryRequest, SSEEvent, ToolMessage } from "../../../src/protocol/types";
++import { llmEmitsText, makeMockLlm } from "../../helpers/mock-llm";
++import { collectGenerator } from "../../helpers/sse-reader";
++import { clearAllModuleState } from "../../helpers/clear-state";
++
++beforeEach(() => {
++  clearAllModuleState();
++  _resetWidgetDataCache();
++});
++
++function tools(): AgentTool[] {
++  return [
++    {
++      name: "set_markdown_content",
++      server_id: "bdobb-local",
++      url: "",
++      description: "Replace a note card's body",
++      input_schema: {
++        properties: { card_id: { type: "string" }, text: { type: "string" } },
++        required: ["card_id", "text"],
++      },
++    },
++  ];
++}
++
++function agentToolCalls(events: SSEEvent[]) {
++  return events
++    .filter((e) => e.event === "copilotFunctionCall" && (e.data as { function?: string }).function === "execute_agent_tool")
++    .map((e) => e.data as {
++      input_arguments: { tool_name: string; server_id: string; parameters: Record<string, unknown> };
++      extra_state?: { pending_agent_tool_calls?: Array<{ tool_name: string; input: Record<string, unknown> }> };
++    });
++}
++
++const save = (card: string) => ({ card_id: card, text: `answer ${card}` });
++
++/** The client's re-POST of one executed call, echoing the extra_state it was given. */
++function result(card: string, extra_state?: Record<string, unknown>): ToolMessage {
++  return {
++    role: "tool",
++    function: "execute_agent_tool",
++    input_arguments: { tool_name: "set_markdown_content", server_id: "bdobb-local", parameters: save(card) },
++    data: [{ items: [{ type: "text", text: JSON.stringify({ updated: true, card_id: card }) }] }],
++    ...(extra_state ? { extra_state } : {}),
++  } as unknown as ToolMessage;
++}
++
++function run(messages: unknown[], model = makeMockLlm(llmEmitsText("MODEL SHOULD NOT RUN"))) {
++  return collectGenerator(
++    runAgentLoop({
++      request: { messages, tools: tools() } as unknown as QueryRequest,
++      rawModelId: "openai:gpt-4o-mini",
++      model,
++      allWidgets: [],
++      workspaceState: null,
++      generativeUiEnabled: false,
++      conversationId: "queue-1",
++    }),
++  );
++}
++
++describe("execute_agent_tool — several calls in one step", () => {
++  it("emits the first call and queues the rest, in order", async () => {
++    const events = await run(
++      [{ role: "human", content: "write all three" }],
++      makeMockLlm({
++        toolCalls: [
++          { toolName: "set_markdown_content", input: save("a") },
++          { toolName: "set_markdown_content", input: save("b") },
++          { toolName: "set_markdown_content", input: save("c") },
++        ],
++        finishReason: "tool-calls",
++      }),
++    );
++    const calls = agentToolCalls(events);
++    expect(calls).toHaveLength(1);
++    expect(calls[0]!.input_arguments.parameters).toEqual(save("a"));
++    expect(calls[0]!.extra_state?.pending_agent_tool_calls).toEqual([
++      { tool_name: "set_markdown_content", input: save("b") },
++      { tool_name: "set_markdown_content", input: save("c") },
++    ]);
++  });
++
++  it("drains one queued call per re-POST before the model runs, then the model answers", async () => {
++    const queue = [
++      { tool_name: "set_markdown_content", input: save("b") },
++      { tool_name: "set_markdown_content", input: save("c") },
++    ];
++    const human = { role: "human", content: "write all three" };
++
++    const second = await run([human, result("a", { pending_agent_tool_calls: queue })]);
++    const c2 = agentToolCalls(second);
++    expect(c2).toHaveLength(1);
++    expect(c2[0]!.input_arguments.parameters).toEqual(save("b"));
++    expect(c2[0]!.extra_state?.pending_agent_tool_calls).toEqual([queue[1]]);
++    expect(second.some((e) => e.event === "copilotMessageChunk")).toBe(false);
++
++    const third = await run([human, result("a"), result("b", { pending_agent_tool_calls: [queue[1]] })]);
++    const c3 = agentToolCalls(third);
++    expect(c3).toHaveLength(1);
++    expect(c3[0]!.input_arguments.parameters).toEqual(save("c"));
++    expect(c3[0]!.extra_state?.pending_agent_tool_calls).toBeUndefined();
++
++    // Queue empty: the next re-POST runs the model with every result in hand.
++    const last = await run([human, result("a"), result("b"), result("c")], makeMockLlm(llmEmitsText("All three saved.")));
++    expect(agentToolCalls(last)).toHaveLength(0);
++    expect(last.some((e) => e.event === "copilotMessageChunk")).toBe(true);
++  });
++
++  it("ignores a malformed echoed queue: not a list, or an entry whose input is not an object", async () => {
++    for (const bad of ["oops", [{ tool_name: "set_markdown_content", input: "x" }]]) {
++      const events = await run(
++        [{ role: "human", content: "go" }, result("a", { pending_agent_tool_calls: bad })],
++        makeMockLlm(llmEmitsText("done")),
++      );
++      expect(agentToolCalls(events)).toHaveLength(0);
++      expect(events.some((e) => e.event === "copilotMessageChunk")).toBe(true);
++    }
++  });
++
++  it("drops a queued call whose tool is not offered this turn (the queue is client-echoed)", async () => {
++    const events = await run(
++      [
++        { role: "human", content: "go" },
++        result("a", { pending_agent_tool_calls: [{ tool_name: "delete_everything", input: {} }] }),
++      ],
++      makeMockLlm(llmEmitsText("done")),
++    );
++    expect(agentToolCalls(events)).toHaveLength(0);
++    expect(events.some((e) => e.event === "copilotMessageChunk")).toBe(true);
++  });
++});

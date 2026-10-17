@@ -1,0 +1,76 @@
+From be7d8b6b05ce5c8a918055036c69dcf38aaac906 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 00:38:33 -0400
+Subject: [PATCH 08/10] fix(html-artifact): tell the model scripts never run;
+ draw charts as static SVG
+
+The tool description only warned that external <script src> won't load,
+so the model reasonably used inline script. Live with the openbb-html-chart
+skill, the artifact was an empty <svg> plus a <script> that drew the lines
+and legend; BDOBB renders html artifacts in a srcdoc iframe without
+allow-scripts, under an inherited script-src 'self', so it showed blank.
+
+The tool and `html` field descriptions now say JavaScript never runs and
+that charts must be written out as inline SVG elements.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/agent/tools/html-artifact.ts                 | 7 +++++--
+ tests/unit/src/agent/tools/html-artifact.test.ts | 9 +++++++++
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/agent/tools/html-artifact.ts b/src/agent/tools/html-artifact.ts
+index 28d02c3..709c67a 100644
+--- a/src/agent/tools/html-artifact.ts
++++ b/src/agent/tools/html-artifact.ts
+@@ -24,7 +24,8 @@ export const htmlArtifactSchema = z.object({
+     .min(1)
+     .describe(
+       "Inline HTML for the artifact. Use inline styles only — external resources " +
+-        "(scripts/CSS over the network) will be sandboxed away. Max 50 KB.",
++        "(scripts/CSS over the network) will be sandboxed away. Static markup only: no <script>, " +
++        "because it never runs, so write chart lines, bars and legends out as inline SVG elements. Max 50 KB.",
+     ),
+   name: z.string().min(1).describe("Short artifact name, shown in the citation chip."),
+   description: z
+@@ -37,7 +38,9 @@ export const htmlArtifactDescription =
+   "Render a one-off HTML report or layout in the workspace conversation. " +
+   "Use sparingly — prefer a table or chart artifact when the data is structured. " +
+   "For flowcharts or Mermaid-style diagrams, use mermaid_diagram instead of embedding Mermaid in HTML. " +
+-  "Workspace renders the HTML in a sandboxed iframe; external `<script src>` won't load.";
++  "Workspace renders the HTML in a sandboxed iframe where JavaScript never runs — inline `<script>` " +
++  "included, not just external `<script src>`. Draw charts as static inline SVG (computed <path>/<line>/" +
++  "<text> elements written into the HTML), never as an empty <svg> or <canvas> filled in by script.";
+ 
+ export type HtmlArtifactArgs = z.infer<typeof htmlArtifactSchema>;
+ 
+diff --git a/tests/unit/src/agent/tools/html-artifact.test.ts b/tests/unit/src/agent/tools/html-artifact.test.ts
+index baa34da..b5639e3 100644
+--- a/tests/unit/src/agent/tools/html-artifact.test.ts
++++ b/tests/unit/src/agent/tools/html-artifact.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from "bun:test";
+ import {
+   htmlArtifactDescription,
++  htmlArtifactSchema,
+   runHtmlArtifact,
+ } from "../../../../../src/agent/tools/html-artifact";
+ import type { CopilotArtifact, SSEEvent } from "../../../../../src/protocol/types";
+@@ -12,6 +13,14 @@ describe("runHtmlArtifact", () => {
+     expect(htmlArtifactDescription).toContain("mermaid_diagram");
+   });
+ 
++  it("tells the model scripts never run, so charts must be static SVG", () => {
++    // Live 2026-10-01: an openbb-html-chart artifact was an empty <svg> filled
++    // by an inline <script>; the client frame runs no script, so it was blank.
++    expect(htmlArtifactDescription).toContain("never runs");
++    expect(htmlArtifactDescription).toContain("static inline SVG");
++    expect(htmlArtifactSchema.shape.html.description).toContain("no <script>");
++  });
++
+   it("emits a single html artifact onto the queue", () => {
+     const artifactQueue: SSEEvent[] = [];
+     const out = runHtmlArtifact(
+-- 
+2.54.0 (Apple Git-157)
+

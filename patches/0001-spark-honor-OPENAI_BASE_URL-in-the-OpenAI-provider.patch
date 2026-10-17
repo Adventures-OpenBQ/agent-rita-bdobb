@@ -1,0 +1,44 @@
+From 46d3a6dfe91adcfe4720049a388ce31e7686e308 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Sat, 1 Aug 2026 04:21:25 -0400
+Subject: [PATCH 01/10] spark: honor OPENAI_BASE_URL in the OpenAI provider
+
+Rita's OpenAI provider is wired with createOpenAI({ apiKey }) and no
+baseURL override, so it can only ever reach api.openai.com. Only the
+Ollama provider has a configurable endpoint, and it targets Ollama's
+native /api, not an OpenAI-compatible /v1.
+
+We run Qwen3-Coder via llama.cpp on an OpenAI-compatible /v1 endpoint
+on a local box (the "Spark"). Add an optional OPENAI_BASE_URL env var
+so the OpenAI provider can be pointed at it instead.
+
+With OPENAI_BASE_URL unset this is byte-for-byte upstream behavior
+(the SDK's own default baseURL applies). No changes to model-id
+parsing, provider prefixes, or DEFAULT_MODEL precedence.
+
+Note: CORS is already permissive app-wide in src/server.ts
+(app.use("*", cors()) at the top of the middleware stack), so no CORS
+patch is needed for the Tauri desktop client's SSE fetch to Rita.
+---
+ src/lib/providers.ts | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib/providers.ts b/src/lib/providers.ts
+index 9a23dbf..af4010c 100644
+--- a/src/lib/providers.ts
++++ b/src/lib/providers.ts
+@@ -20,7 +20,10 @@ const providers: ProviderEntry[] = [];
+ 
+ const openaiKey = process.env.OPENAI_API_KEY;
+ if (openaiKey) {
+-  const openai = createOpenAI({ apiKey: openaiKey });
++  const openai = createOpenAI({
++    apiKey: openaiKey,
++    ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
++  });
+   providers.push({
+     prefix: "openai",
+     models: [
+-- 
+2.54.0 (Apple Git-157)
+
