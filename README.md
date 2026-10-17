@@ -33,14 +33,14 @@ scripts/build.sh --check-only  # clone, verify and patch only; no Docker
 
 `build.sh` refuses to continue if the fetched commit is not the pinned SHA or a patch does not apply. Set `IMAGE=name:tag` to build under another name. Build on the machine that will run Rita (for this series, the NAS), so the image matches its architecture.
 
-A QNAP NAS has Docker (Container Station) but no `git`, and `build.sh` needs both. Run it there in a throwaway Docker CLI container that adds `git` and `bash` and drives the NAS's own Docker daemon through its socket. From this checkout:
+If your NAS has Docker but no `git` (`build.sh` needs both), run it there in a throwaway Docker CLI container that adds `git` and `bash` and drives the NAS's own Docker daemon through its socket. From this checkout:
 
 ```sh
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/recipe -w /recipe \
   docker:27-cli sh -c "apk add -q --no-cache git bash && scripts/build.sh"
 ```
 
-The image is still built by, and lands in, the NAS's Docker, as `openbq-rita:6.0.0`. The `docker` command itself is in Container Station's `bin` directory if it is not on your SSH `PATH`. Without git you can't clone this repository on the NAS, so copy the checkout there, for example with `scp -r` from another machine.
+The image is still built by, and lands in, the NAS's Docker, as `openbq-rita:6.0.0`. On some NAS systems the `docker` binary is not on the SSH `PATH`; call it by its full path. Without git you can't clone this repository on the NAS, so copy the checkout there, for example with `scp -r` from another machine.
 
 ## Configure
 
