@@ -1,6 +1,6 @@
 # Rita Aperture Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Run Rita with Claude through a private Tailscale Aperture gateway and reuse the 18 client live tests.
 
@@ -31,19 +31,19 @@
 
 **Interfaces:** resolveModel(rawModelId) returns LanguageModel; singleShotLlm(prompt, opts?) returns Promise<string>. New config: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY and DEFAULT_MODEL=anthropic:<gateway-model>.
 
-- [ ] Apply existing recipe patches in a new generated checkout; run baseline tests.
-- [ ] Add real HTTP boundary tests for Anthropic single-shot, streaming/tool result round trips, missing-provider rejection, URL normalization, explicit override and provider errors. Run before implementation and retain expected failures.
-- [ ] Add compatible Anthropic SDK; register Anthropic when keyed, list the configured Claude default, normalize /v1 once, and reject unknown explicit providers rather than OpenAI fallback. Use DEFAULT_MODEL between per-call override and historical helper default.
-- [ ] Run focused and complete suite plus typecheck. Preserve source changes and tests as recipe patch.
+- [x] Apply existing recipe patches in a new generated checkout; run baseline tests.
+- [x] Add real HTTP boundary tests for Anthropic single-shot, streaming/tool result round trips, missing-provider rejection, URL normalization, explicit override and provider errors. Run before implementation and retain expected failures.
+- [x] Add compatible Anthropic SDK; register Anthropic when keyed, list the configured Claude default, normalize /v1 once, and reject unknown explicit providers rather than OpenAI fallback. Use DEFAULT_MODEL between per-call override and historical helper default.
+- [x] Run focused and complete suite plus typecheck. Preserve source changes and tests as recipe patch.
 
 ### Task 2: Reproducible audit configuration and image
 
 **Files:** rita-aperture.env.example, README.md, scripts/test-aperture.sh; own output runtime runner/evidence.
 
-- [ ] Document gateway setup, managed versus passthrough auth, environment settings and known test limits.
-- [ ] Verify recipe applies from its pinned SHA; build uniquely tagged image and exercise startup/helper paths via local controlled gateway.
+- [x] Document gateway setup, managed versus passthrough auth, environment settings and known test limits.
+- [x] Verify recipe applies from its pinned SHA; build uniquely tagged image and exercise startup/helper paths via local controlled gateway.
 - [ ] Run 18 unchanged native live tests once real Aperture is authorized, reachable and grants Claude access. Record actual model, gateway and all failures/skips.
-- [ ] Obtain final independent review, fix material findings, commit local recipe changes.
+- [x] Obtain final independent review, fix material findings, commit local recipe changes.
 
 ## Execution ruling
 

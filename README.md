@@ -17,6 +17,7 @@ The recipe for the Rita agent that BDOBB talks to in Adventures in OpenBQ (Episo
 | 0010 | Routes answer a non-JSON body with 400, not 500 |
 | 0011 | Follow-up suggestions only on the final answer |
 | 0012 | Retry an empty step, also after a client tool |
+| 0013 | Claude through Aperture: native Anthropic provider, explicit provider routing, and helper model defaults |
 
 There is no 0005; it was a compose file, which this recipe does not carry.
 
@@ -45,6 +46,57 @@ The image is still built by, and lands in, the NAS's Docker, as `openbq-rita:6.0
 ## Configure
 
 Copy `rita.env.example` somewhere outside every repository, `chmod 600` it, and fill in the model endpoint. Never commit the filled copy. openbq-docker's `docker-compose.v6.yml` reads it as `rita.env` and runs the image.
+
+## Claude through Tailscale Aperture
+
+Use a separate private Rita instance for Claude tests. The public Funnel Rita
+remains Qwen-only; do not change its provider keys or policy.
+
+1. Complete [Aperture setup](https://tailscale.com/docs/aperture/get-started).
+   Configure Claude access, billing or upstream credentials, and the required
+   tailnet grants. Aperture account setup does not itself grant model access.
+2. Copy `rita-aperture.env.example` outside every repository and `chmod 600` it.
+   Set `ANTHROPIC_BASE_URL` to the gateway URL and `DEFAULT_MODEL` to
+   `anthropic:<exact-enabled-model-id>`. The URL can end in `/v1` or `/v1/`;
+   Rita sends requests to exactly one `/v1/messages` path.
+3. For a managed gateway, leave `ANTHROPIC_API_KEY` blank. Rita sends a
+   non-secret placeholder; Aperture uses tailnet identity and injects upstream
+   credentials. For API-key passthrough, provide the required provider key in
+   the private env file. Do not copy Claude subscription tokens from another
+   app; subscription-client compatibility is a separate qualification.
+4. Build under a distinct audit image name:
+   `IMAGE=rita-aperture:audit scripts/build.sh`.
+   Run that image privately on a host or network that can reach the gateway.
+   If publishing a test port, bind it to `127.0.0.1` only. Do not add a Funnel.
+5. Verify `/agents.json` names the configured Claude model, then send a plain
+   streamed query and tool calls. An unavailable provider now fails explicitly
+   instead of being passed to the OpenAI provider.
+
+An explicit helper model overrides `DEFAULT_MODEL`. Without an explicit model,
+helper routes and tools use `DEFAULT_MODEL`, retaining their historical
+`openai:gpt-4o-mini` default only when no model is configured. The chat model
+picker still overrides chat's default; it does not change helper defaults.
+
+After `scripts/build.sh --check-only`, run `scripts/test-aperture.sh`. This
+installs the frozen dependencies in the generated Linux checkout, runs the
+complete Rita suite without external networking, and checks types with
+TypeScript 5.9.3. The HTTP boundary tests cover streaming/tool-result rounds,
+helper routing, URL normalization, gateway 401 responses, and missing-provider
+errors; they do not prove that a real Aperture gateway grants Claude access.
+
+For BDOBB's existing live suites, set `OPENBB_RITA_URL` to the isolated instance
+and `OPENBB_BACKEND_URL` to the reference backend, and run:
+
+```sh
+pnpm exec vitest run src/test/integration/rita-live.test.ts \
+  src/test/integration/rita-authoring-live.test.ts \
+  src/test/integration/rita-table-model-live.test.ts \
+  --maxWorkers=1 --minWorkers=1 --testTimeout=300000
+```
+
+There are 18 tests at the audited BDOBB revision. They use real model requests,
+in-memory dashboard stores, and a reference data backend. They do not qualify
+all helper endpoints, native UI, physical devices, or a release by themselves.
 
 ## Provenance
 

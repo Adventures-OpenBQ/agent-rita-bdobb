@@ -1,0 +1,278 @@
+diff --git a/bun.lock b/bun.lock
+index 28d405f..015df72 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -5,6 +5,7 @@
+     "": {
+       "name": "my-app",
+       "dependencies": {
++        "@ai-sdk/anthropic": "3.0.118",
+         "@ai-sdk/groq": "^3.0.32",
+         "@ai-sdk/openai": "^3.0.49",
+         "@daytonaio/sdk": "^0.162.0",
+@@ -40,15 +41,17 @@
+     },
+   },
+   "packages": {
++    "@ai-sdk/anthropic": ["@ai-sdk/anthropic@3.0.118", "", { "dependencies": { "@ai-sdk/provider": "3.0.16", "@ai-sdk/provider-utils": "4.0.51" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-5j8Cc9owORxhhZxFtpznXPTdLxeWm6bPCVbndM0e+NdvGVxe9GDgNqQq1V0KqOV54hZ6hyQVEXHkgTRPyXzcQg=="],
++
+     "@ai-sdk/gateway": ["@ai-sdk/gateway@3.0.84", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@ai-sdk/provider-utils": "4.0.21", "@vercel/oidc": "3.1.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-RnUw6UNvkaw9MEaJU9cIjA+WBP+ZR5+M/9nfbfJHcGKtTbcWXijJuYKx9nYRnm+qU+iiakb0XvQA/vvho6lTsw=="],
+ 
+     "@ai-sdk/groq": ["@ai-sdk/groq@3.0.32", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@ai-sdk/provider-utils": "4.0.21" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-cKa+viBUgkY0GVWDAMYYOaRS+r9PNJvstfLujqi8YQSlpknQsE+J9TeG8b8bjkAnMnCpUd8s/ZEJHMuKzp+rYQ=="],
+ 
+     "@ai-sdk/openai": ["@ai-sdk/openai@3.0.49", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@ai-sdk/provider-utils": "4.0.21" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-U2f0pCyNn/jQH3wjgxr8o9VvCkuDFTtXbIhbFFtgXqCzMbed6rBnvzQcAMEK0/Pa44byL9zfcvCOFOflvkRA8w=="],
+ 
+-    "@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++    "@ai-sdk/provider": ["@ai-sdk/provider@3.0.16", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-9Av6kg0t/IN/dcYAAmEJ4B9OPhcEJqwSR+GfHEA8olRkindXpUHadc3p3cyvgFUQFTVm1G5thtsmgZ9yVb2w3A=="],
+ 
+-    "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++    "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.51", "", { "dependencies": { "@ai-sdk/provider": "3.0.16", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.8", "undici": "^6.28.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-ukLTs9x1Xm6lxSIwbJIxYQxbZHmVeIczNntARZrBcOa6pjdBhqeZnATNnJMHa7M9dZ8Ji5NJbpKpvz7o5XyBtg=="],
+ 
+     "@antfu/install-pkg": ["@antfu/install-pkg@1.1.0", "", { "dependencies": { "package-manager-detector": "^1.3.0", "tinyexec": "^1.0.1" } }, "sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ=="],
+ 
+@@ -1054,6 +1057,22 @@
+ 
+     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
+ 
++    "@ai-sdk/gateway/@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++
++    "@ai-sdk/gateway/@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++
++    "@ai-sdk/groq/@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++
++    "@ai-sdk/groq/@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++
++    "@ai-sdk/openai/@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++
++    "@ai-sdk/openai/@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++
++    "@ai-sdk/provider-utils/eventsource-parser": ["eventsource-parser@3.1.1", "", {}, "sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ=="],
++
++    "@ai-sdk/provider-utils/undici": ["undici@6.29.1", "", {}, "sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA=="],
++
+     "@aws-crypto/sha1-browser/@smithy/util-utf8": ["@smithy/util-utf8@2.3.0", "", { "dependencies": { "@smithy/util-buffer-from": "^2.2.0", "tslib": "^2.6.2" } }, "sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A=="],
+ 
+     "@aws-crypto/sha256-browser/@smithy/util-utf8": ["@smithy/util-utf8@2.3.0", "", { "dependencies": { "@smithy/util-buffer-from": "^2.2.0", "tslib": "^2.6.2" } }, "sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A=="],
+@@ -1182,6 +1201,10 @@
+ 
+     "accepts/mime-types": ["mime-types@3.0.2", "", { "dependencies": { "mime-db": "^1.54.0" } }, "sha512-Lbgzdk0h4juoQ9fCKXW4by0UJqj+nOOrI9MJ1sSj4nI8aI2eo1qmvQEie4VD1glsS250n15LsWsYtCugiStS5A=="],
+ 
++    "ai/@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++
++    "ai/@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++
+     "chalk/supports-color": ["supports-color@7.2.0", "", { "dependencies": { "has-flag": "^4.0.0" } }, "sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw=="],
+ 
+     "cytoscape-fcose/cose-base": ["cose-base@2.2.0", "", { "dependencies": { "layout-base": "^2.0.0" } }, "sha512-AzlgcsCbUMymkADOJtQm3wO9S3ltPfYOFD5033keQn9NJzIbtnZj+UdBJe7DYml/8TdbtHJW3j58SOnKhWY/5g=="],
+@@ -1200,6 +1223,10 @@
+ 
+     "htmlparser2/entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
+ 
++    "ollama-ai-provider-v2/@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
++
++    "ollama-ai-provider-v2/@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.21", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.6" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw=="],
++
+     "parse5/entities": ["entities@6.0.1", "", {}, "sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g=="],
+ 
+     "send/mime-types": ["mime-types@3.0.2", "", { "dependencies": { "mime-db": "^1.54.0" } }, "sha512-Lbgzdk0h4juoQ9fCKXW4by0UJqj+nOOrI9MJ1sSj4nI8aI2eo1qmvQEie4VD1glsS250n15LsWsYtCugiStS5A=="],
+diff --git a/package.json b/package.json
+index 9b881ee..1b762ec 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,7 @@
+     "smoke:rag": "bun run scripts/smoke-doc-rag.ts"
+   },
+   "dependencies": {
++    "@ai-sdk/anthropic": "3.0.118",
+     "@ai-sdk/groq": "^3.0.32",
+     "@ai-sdk/openai": "^3.0.49",
+     "@daytonaio/sdk": "^0.162.0",
+diff --git a/src/lib/llm.ts b/src/lib/llm.ts
+index 62dd959..9afa66b 100644
+--- a/src/lib/llm.ts
++++ b/src/lib/llm.ts
+@@ -19,7 +19,7 @@ export async function singleShotLlm(
+     functionId?: string;
+   },
+ ): Promise<string> {
+-  const modelId = opts?.model ?? DEFAULT_MODEL;
++  const modelId = opts?.model ?? (process.env.DEFAULT_MODEL || DEFAULT_MODEL);
+   const model = resolveModel(modelId);
+   const result = await generateText({
+     model,
+diff --git a/src/lib/providers.ts b/src/lib/providers.ts
+index d3da5b4..1db6fdb 100644
+--- a/src/lib/providers.ts
++++ b/src/lib/providers.ts
+@@ -1,3 +1,4 @@
++import { createAnthropic } from "@ai-sdk/anthropic";
+ import { createGroq } from "@ai-sdk/groq";
+ import { createOpenAI } from "@ai-sdk/openai";
+ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+@@ -90,6 +91,34 @@ if (openaiKey) {
+   });
+ }
+ 
++// Aperture authenticates tailnet identities and can inject an upstream key.
++// The placeholder is only for managed gateways; passthrough needs a real key.
++const anthropicKey = process.env.ANTHROPIC_API_KEY;
++const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
++if (anthropicKey || anthropicBaseUrl) {
++  const baseURL = anthropicBaseUrl
++    ? `${anthropicBaseUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`
++    : undefined;
++  const anthropic = createAnthropic({
++    apiKey: anthropicKey || "tailscale-aperture",
++    ...(baseURL ? { baseURL } : {}),
++  });
++  const configuredModel = process.env.DEFAULT_MODEL?.startsWith("anthropic:")
++    ? process.env.DEFAULT_MODEL.slice("anthropic:".length)
++    : undefined;
++  const models = [...new Set([
++    ...(configuredModel ? [configuredModel] : []),
++    "claude-sonnet-4-6",
++    "claude-opus-4-6",
++    "claude-haiku-4-5-20251001",
++  ])];
++  providers.push({
++    prefix: "anthropic",
++    models: models.map((id) => ({ id: `anthropic:${id}`, name: `Claude: ${id}` })),
++    resolve: (id) => anthropic(id),
++  });
++}
++
+ const openrouterKey = process.env.OPENROUTER_API_KEY;
+ if (openrouterKey) {
+   const openrouter = createOpenRouter({ apiKey: openrouterKey });
+@@ -151,7 +180,7 @@ export function resolveModel(rawModelId: string): LanguageModel {
+     }
+   }
+   const fallback = providers.find((p) => p.prefix === "openai");
+-  if (fallback) return fallback.resolve(rawModelId.replace(/^openai:/, ""));
++  if (fallback && !rawModelId.includes(":")) return fallback.resolve(rawModelId);
+   throw new Error(`No provider available for model: ${rawModelId}`);
+ }
+ 
+@@ -162,7 +191,7 @@ export function allModels(): ModelEntry[] {
+ const logger = getLogger(["app", "providers"]);
+ 
+ if (providers.length === 0) {
+-  logger.error("No AI providers configured. Set at least one API key (OPENAI_API_KEY, OPENROUTER_API_KEY) or use Ollama.");
++  logger.error("No AI providers configured. Set at least one API key (OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY) or use Ollama.");
+ }
+ 
+ const available = providers.map((p) => p.prefix).join(", ");
+diff --git a/tests/integration/aperture-provider.test.ts b/tests/integration/aperture-provider.test.ts
+new file mode 100644
+index 0000000..3dbebc7
+--- /dev/null
++++ b/tests/integration/aperture-provider.test.ts
+@@ -0,0 +1,108 @@
++import { afterEach, describe, expect, it } from "bun:test";
++
++// Real provider/AI SDK boundary; a local server substitutes only external inference.
++// Each child has a fresh module registry, independent of other tests' mock.module calls.
++const servers: ReturnType<typeof Bun.serve>[] = [];
++afterEach(() => { for (const s of servers.splice(0)) s.stop(true); });
++function gateway(handler: (request: Request) => Response | Promise<Response>) {
++  const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
++  servers.push(s);
++  return `http://127.0.0.1:${s.port}`;
++}
++async function child(code: string, env: Record<string, string>) {
++  const p = Bun.spawn([process.execPath, "-e", code], {
++    cwd: process.cwd(), stdout: "pipe", stderr: "pipe",
++    env: { PATH: process.env.PATH, NODE_ENV: "test", OPENAI_API_KEY: "", OPENROUTER_API_KEY: "", GROQ_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_BASE_URL: "", DEFAULT_MODEL: "", ...env },
++  });
++  const [stdout, stderr, exit] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
++  return { stdout, stderr, exit };
++}
++function textMessage(text: string) {
++  return Response.json({ id: "msg_audit", type: "message", role: "assistant", model: "claude-audit", content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 2 } });
++}
++const helper = `import { singleShotLlm } from "./src/lib/llm.ts"; console.log("AUDIT_RESULT", await singleShotLlm("Reply pong"));`;
++
++describe("Anthropic through Aperture", () => {
++  for (const suffix of ["", "/", "/v1", "/v1/"]) {
++    it(`routes helper DEFAULT_MODEL to /v1/messages with base suffix '${suffix}'`, async () => {
++      const requests: { path: string; model: string; key: string | null }[] = [];
++      const url = gateway(async (req) => {
++        const body = await req.json() as { model: string };
++        requests.push({ path: new URL(req.url).pathname, model: body.model, key: req.headers.get("x-api-key") });
++        return textMessage("pong");
++      });
++      const out = await child(helper, { ANTHROPIC_BASE_URL: url + suffix, ANTHROPIC_API_KEY: "aperture-placeholder", DEFAULT_MODEL: "anthropic:claude-audit" });
++      expect(out.exit, out.stderr).toBe(0);
++      expect(out.stdout).toContain("AUDIT_RESULT pong");
++      expect(requests).toEqual([{ path: "/v1/messages", model: "claude-audit", key: "aperture-placeholder" }]);
++    });
++  }
++  it("supports a managed gateway without an upstream API key in Rita", async () => {
++    let model = "";
++    const url = gateway(async req => { model = (await req.json() as {model:string}).model; return textMessage("pong"); });
++    const out = await child(helper, { ANTHROPIC_BASE_URL: url, DEFAULT_MODEL: "anthropic:claude-audit" });
++    expect(out.exit, out.stderr).toBe(0);
++    expect(model).toBe("claude-audit");
++  });
++  it("honors an explicit helper model over DEFAULT_MODEL", async () => {
++    let model = "";
++    const url = gateway(async req => { model = (await req.json() as {model:string}).model; return textMessage("pong"); });
++    const out = await child(`import { singleShotLlm } from "./src/lib/llm.ts"; console.log(await singleShotLlm("pong", {model:"anthropic:claude-override"}));`, { ANTHROPIC_BASE_URL: url, DEFAULT_MODEL: "anthropic:claude-audit" });
++    expect(out.exit, out.stderr).toBe(0);
++    expect(model).toBe("claude-override");
++  });
++  it("rejects an unavailable explicit provider instead of sending it to OpenAI", async () => {
++    let calls = 0;
++    const url = gateway(() => { calls++; return textMessage("wrong provider"); });
++    const out = await child(`import { resolveModel } from "./src/lib/providers.ts"; try { resolveModel("anthropic:claude-audit"); process.exitCode=9; } catch(e) { console.log(String(e)); }`, { OPENAI_API_KEY: "test-openai", OPENAI_BASE_URL: url });
++    expect(out.exit, out.stderr).toBe(0);
++    expect(out.stdout).toContain("No provider available for model: anthropic:claude-audit");
++    expect(calls).toBe(0);
++  });
++  it("advertises the configured Claude model to BDOBB", async () => {
++    const out = await child(`import { agentsRouter } from "./src/routes/agents.ts"; const r=await agentsRouter.request("/agents.json"); const a=(await r.json()).openbb_agent_rita.features.model; console.log("AUDIT_RESULT", JSON.stringify(a));`, { ANTHROPIC_BASE_URL: "http://127.0.0.1:1", DEFAULT_MODEL: "anthropic:claude-audit" });
++    expect(out.exit, out.stderr).toBe(0);
++    const line=out.stdout.split("\n").find(x=>x.startsWith("AUDIT_RESULT "))!;
++    const picker=JSON.parse(line.slice(13));
++    expect(picker.default).toBe("anthropic:claude-audit");
++    expect(picker.options.some((x:{value:string})=>x.value==="anthropic:claude-audit")).toBe(true);
++  });
++  it("propagates rejected gateway credentials", async () => {
++    const url=gateway(()=>Response.json({type:"error",error:{type:"authentication_error",message:"audit denied"}},{status:401}));
++    const out=await child(helper,{ANTHROPIC_BASE_URL:url,DEFAULT_MODEL:"anthropic:claude-audit"});
++    expect(out.exit).not.toBe(0);
++    expect(out.stderr).toContain("audit denied");
++  });
++  it("preserves the historical OpenAI helper default when no model is configured",async()=>{
++    let model="";
++    const url=gateway(async req=>{model=(await req.json() as {model:string}).model; return Response.json({id:"chat_audit",object:"chat.completion",created:1,model,choices:[{index:0,message:{role:"assistant",content:"pong"},finish_reason:"stop"}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}});});
++    const out=await child(helper,{OPENAI_API_KEY:"test-openai",OPENAI_BASE_URL:url});
++    expect(out.exit,out.stderr).toBe(0);
++    expect(out.stdout).toContain("AUDIT_RESULT pong");
++    expect(model).toBe("gpt-4o-mini");
++  });
++  it("streams text after a complete Claude tool-result round trip", async () => {
++    const requests: Record<string,unknown>[]=[];
++    const url=gateway(async req=>{
++      expect(new URL(req.url).pathname).toBe("/v1/messages");
++      const body=await req.json() as Record<string,unknown>; requests.push(body);
++      const tool=requests.length===1;
++      const events=[
++        ["message_start",{type:"message_start",message:{id:`msg_${requests.length}`,type:"message",role:"assistant",model:"claude-audit",content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:10,output_tokens:0}}}],
++        ["content_block_start",{type:"content_block_start",index:0,content_block:tool?{type:"tool_use",id:"tool_audit",name:"get_total",input:{}}:{type:"text",text:""}}],
++        ["content_block_delta",{type:"content_block_delta",index:0,delta:tool?{type:"input_json_delta",partial_json:"{}"}:{type:"text_delta",text:"Total is 42."}}],
++        ["content_block_stop",{type:"content_block_stop",index:0}],
++        ["message_delta",{type:"message_delta",delta:{stop_reason:tool?"tool_use":"end_turn",stop_sequence:null},usage:{output_tokens:5}}],
++        ["message_stop",{type:"message_stop"}],
++      ];
++      return new Response(events.map(([name,data])=>`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(""),{headers:{"Content-Type":"text/event-stream"}});
++    });
++    const out=await child(`import {streamText,tool,stepCountIs} from "ai"; import {z} from "zod"; import {resolveModel} from "./src/lib/providers.ts"; let calls=0;const result=streamText({model:resolveModel("anthropic:claude-audit"),messages:[{role:"user",content:"Get the total"}],tools:{get_total:tool({inputSchema:z.object({}),execute:async()=>{calls++;return {total:42};}})},stopWhen:stepCountIs(3),maxRetries:0});let text="";for await(const t of result.textStream)text+=t;console.log("AUDIT_RESULT",JSON.stringify({text,calls}));`,{ANTHROPIC_BASE_URL:url});
++    expect(out.exit,out.stderr).toBe(0);
++    expect(out.stdout).toContain('"text":"Total is 42.","calls":1');
++    expect(requests).toHaveLength(2);
++    const history=requests[1]!.messages as {role:string;content:Record<string,unknown>[]}[];
++    expect(history.some(m=>m.role==="assistant"&&m.content.some(c=>c.type==="tool_use"&&c.id==="tool_audit"))).toBe(true);
++    expect(history.some(m=>m.role==="user"&&m.content.some(c=>c.type==="tool_result"&&c.tool_use_id==="tool_audit"&&JSON.stringify(c.content).includes("42")))).toBe(true);
++  });
++});
