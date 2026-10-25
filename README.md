@@ -18,6 +18,7 @@ The recipe for the Rita agent that BDOBB talks to in Adventures in OpenBQ (Episo
 | 0011 | Follow-up suggestions only on the final answer |
 | 0012 | Retry an empty step, also after a client tool |
 | 0013 | Claude through Aperture: native Anthropic provider, explicit provider routing, and helper model defaults |
+| 0014 | Distinguish model authentication, billing, permissions and rate-limit failures in the visible answer |
 
 There is no 0005; it was a compose file, which this recipe does not carry.
 
@@ -104,3 +105,18 @@ all helper endpoints, native UI, physical devices, or a release by themselves.
 The image the series' regression ran for BDOBB v6.0.0 was `ghcr.io/adventures-openbq/openbq-rita:6.0.0` (`sha256:6e422484…`), built from the same upstream commit and patches by the maintainer recipe in Adventures-OpenBQ/agent-rita. That registry image is private and is not needed to follow the series.
 
 Copyright 2026 SecretoftheUniverse.com LLC. Apache-2.0; see LICENSE and NOTICE.
+
+## Version applicability
+
+This shared service recipe applies from BDOBB v6.0.0 onward. Patches0013–0014
+are general Rita corrections: provider/helper routing and model access errors.
+The native application's provider aggregation hints start in v9.0.0; their
+entity-category guidance and transactional refusal belong in v9 and later,
+not in v6–v8. Table-model tools themselves already exist in v6.
+
+Test the native source for the target version, not a later checkout. V6 has17
+live tests across chat, authoring and table-model suites; v9 adds the provider
+hint acceptance case. Outcome-based chart authoring accepts parameters applied
+by add_widget or a subsequent set_widget_params. A separate reconfiguration
+case still verifies set_widget_params. The injected-save case removes alternate
+creation/content tools so its intended rejected write must actually occur.

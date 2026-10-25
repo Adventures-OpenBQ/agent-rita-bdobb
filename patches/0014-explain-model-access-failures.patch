@@ -1,0 +1,95 @@
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index 6b3eb2f..b6ea30d 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -947,13 +947,21 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+     // Must live OUTSIDE the MAX_LOOPS loop (the tools object is rebuilt each
+     // iteration) so a capture survives to the emit. Unused in "inline" mode.
+     let capturedSuggestions: string[] = [];
+-    function visibleModelFailureMessage(errorText: string, isTimeout = false): string {
++    function visibleModelFailureMessage(error: unknown, isTimeout = false): string {
++      if (isTimeout) return "I couldn't finish the response because the model timed out. Try a narrower request.";
++      const statusCode = error && typeof error === "object" && "statusCode" in error ? error.statusCode : undefined;
++      const accessFailures: Record<number, string> = {
++        401: "The model provider rejected authentication; check the provider credential in Rita's private configuration.",
++        402: "The request was blocked by provider or gateway billing. Check credits or the selected provider route; a listed model does not confirm inference access.",
++        403: "The provider or gateway denied model access. Check permissions for the selected model and identity.",
++        429: "The provider or gateway rate limit was reached. Wait before retrying or check the account quota.",
++      };
++      if (typeof statusCode === "number" && accessFailures[statusCode]) return accessFailures[statusCode];
++      const errorText = error instanceof Error ? error.message : String(error);
+       const conciseError = errorText.length <= MAX_VISIBLE_MODEL_ERROR_CHARS
+         ? errorText
+         : `${errorText.slice(0, MAX_VISIBLE_MODEL_ERROR_CHARS)}...`;
+-      return isTimeout
+-        ? "I couldn't finish the response because the model timed out. Try a narrower request."
+-        : `I couldn't finish the response because the model returned an error: ${conciseError}`;
++      return `I couldn't finish the response because the model returned an error: ${conciseError}`;
+     }
+     let suppressWidgetDataToolForCachedRetry = false;
+     const searchTool = makeSearchWidgetsTool(tieredWidgets);
+@@ -1238,14 +1246,14 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+       // leak is visible in prod between eval runs. One warn per stream.
+       let visibleTextStreamed = false;
+       let preToolProseWarned = false;
+-      function* emitVisibleModelFailure(errorText: string, isTimeout = false): Generator<SSEEvent> {
++      function* emitVisibleModelFailure(error: unknown, isTimeout = false): Generator<SSEEvent> {
+         yield* drainQueueToDeferred();
+         // Any partial answer already streamed live; flush whatever the sink
+         // still holds (tail text + un-woven artifacts), then append the
+         // fallback. Gate purely on sink.textEmitted — never reconstruct text
+         // from buffers (there is no buffer now), which would double-emit.
+         for (const ev of sink.flushTail()) yield ev;
+-        const fallback = visibleModelFailureMessage(errorText, isTimeout);
++        const fallback = visibleModelFailureMessage(error, isTimeout);
+         yield messageChunk(sink.textEmitted ? `\n\n${fallback}` : fallback);
+       }
+       try {
+@@ -1406,7 +1414,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+               const errorText = toolErrorText(part.error);
+               logger.error("streamText error part", { loopIdx, error: errorText });
+               yield reasoningStep(`Model error: ${errorText}`, "ERROR");
+-              yield* emitVisibleModelFailure(errorText);
++              yield* emitVisibleModelFailure(part.error);
+               return;
+             }
+             case "abort":
+@@ -1434,10 +1442,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+             : `Model error: ${err instanceof Error ? err.message : String(err)}`,
+           "ERROR",
+         );
+-        yield* emitVisibleModelFailure(
+-          err instanceof Error ? err.message : String(err),
+-          isAbort,
+-        );
++        yield* emitVisibleModelFailure(err, isAbort);
+         return;
+       }
+       if (aborted) {
+diff --git a/tests/integration/agent-loop/smoke.test.ts b/tests/integration/agent-loop/smoke.test.ts
+index 1b88b7c..89b0c84 100644
+--- a/tests/integration/agent-loop/smoke.test.ts
++++ b/tests/integration/agent-loop/smoke.test.ts
+@@ -81,3 +81,22 @@ describe("runAgentLoop — smoke", () => {
+     expect((chunk!.data as { delta: string }).delta).toContain("more credits");
+   });
+ });
++
++
++describe("model access failures", () => {
++  it.each([
++    [401, "check the provider credential"],
++    [402, "provider or gateway billing"],
++    [403, "model access"],
++    [429, "rate limit"],
++  ])("explains HTTP %i without exposing the provider response", async (statusCode, expected) => {
++    const error = Object.assign(new Error("opaque upstream failure sk-ant-private-test"), { statusCode });
++    const events = await run({ model: makeErroringStreamMockLlm(error) });
++    const answer = events.filter(e => e.event === "copilotMessageChunk")
++      .map(e => (e.data as { delta: string }).delta).join("");
++    expect(answer.toLowerCase()).toContain(expected);
++    expect(answer).not.toContain("sk-ant-private-test");
++    expect(events.some(e => e.event === "copilotStatusUpdate" &&
++      (e.data as { eventType?: string }).eventType === "ERROR")).toBe(true);
++  });
++});
