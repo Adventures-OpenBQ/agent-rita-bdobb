@@ -85,7 +85,8 @@ helper routing, URL normalization, gateway 401 responses, and missing-provider
 errors; they do not prove that a real Aperture gateway grants Claude access.
 
 For BDOBB's existing live suites, set `OPENBB_RITA_URL` to the isolated instance
-and `OPENBB_BACKEND_URL` to the reference backend, and run:
+and `OPENBB_BACKEND_URL` to the reference backend. Set `OPENBB_LIVE=1`
+to enable the table suite, then run:
 
 ```sh
 pnpm exec vitest run src/test/integration/rita-live.test.ts \
