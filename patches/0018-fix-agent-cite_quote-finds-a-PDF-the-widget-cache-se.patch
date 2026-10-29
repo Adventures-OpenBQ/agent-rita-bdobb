@@ -1,15 +1,15 @@
-From f3e7b392cc09f26420af2bc5ca3981aedcace55b Mon Sep 17 00:00:00 2001
+From 64baa9672c4ee8b310dae120b91142582bd36e21 Mon Sep 17 00:00:00 2001
 From: artcashin <64659740+artcashin@users.noreply.github.com>
-Date: Thu, 29 Oct 2026 11:08:38 -0400
+Date: Thu, 29 Oct 2026 11:13:16 -0400
 Subject: [PATCH] fix(agent): cite_quote finds a PDF the widget cache served
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
- src/agent/loop.ts                             | 22 ++++--
+ src/agent/loop.ts                             | 22 +++--
  src/agent/tools/cite-quote.ts                 |  4 +-
- .../agent-loop/cite-quote-cache.test.ts       | 75 +++++++++++++++++++
- tests/unit/src/agent/tools/cite-quote.test.ts | 25 ++++++-
- 4 files changed, 119 insertions(+), 7 deletions(-)
+ .../agent-loop/cite-quote-cache.test.ts       | 84 +++++++++++++++++++
+ tests/unit/src/agent/tools/cite-quote.test.ts | 25 +++++-
+ 4 files changed, 128 insertions(+), 7 deletions(-)
  create mode 100644 tests/integration/agent-loop/cite-quote-cache.test.ts
 
 diff --git a/src/agent/loop.ts b/src/agent/loop.ts
@@ -109,10 +109,10 @@ index 00d8343..7e9c797 100644
        : pdf?.url
 diff --git a/tests/integration/agent-loop/cite-quote-cache.test.ts b/tests/integration/agent-loop/cite-quote-cache.test.ts
 new file mode 100644
-index 0000000..1a29b6c
+index 0000000..843cafb
 --- /dev/null
 +++ b/tests/integration/agent-loop/cite-quote-cache.test.ts
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,84 @@
 +/**
 + * 0018: cite_quote after a widget-cache hit must use the PDF cached under the
 + * SAME {uuid, args} key the cache hit served, not another entry for that uuid.
@@ -164,8 +164,17 @@ index 0000000..1a29b6c
 +  beforeEach(() => clearAllModuleState());
 +
 +  it("highlights from the PDF of the args the cache served, not the newest entry for the uuid", async () => {
-+    await cacheWidgetItemsFromReboot(toolFor("2024", "Alpha revenue grew 12 percent."), [report]);
-+    await cacheWidgetItemsFromReboot(toolFor("2025", "Beta revenue fell 3 percent."), [report]);
++    // The entry the loop does NOT request (2025) is strictly newer, so a uuid-only newest-wins lookup would pick it.
++    const realNow = Date.now;
++    const t0 = realNow();
++    try {
++      Date.now = () => t0;
++      await cacheWidgetItemsFromReboot(toolFor("2024", "Alpha revenue grew 12 percent."), [report]);
++      Date.now = () => t0 + 10;
++      await cacheWidgetItemsFromReboot(toolFor("2025", "Beta revenue fell 3 percent."), [report]);
++    } finally {
++      Date.now = realNow;
++    }
 +    const spy = makeSequencedSpyMockLlm([
 +      llmCallsTool("get_widget_data", { widgets: [{ widget_uuid: UUID, input_args: { year: "2024" } }] }),
 +      llmCallsTool("cite_quote", { widget_uuid: UUID, quote: "Alpha revenue grew 12 percent" }),
