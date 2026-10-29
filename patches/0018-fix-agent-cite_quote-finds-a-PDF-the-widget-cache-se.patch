@@ -1,17 +1,19 @@
-From 8ed2c1500890e41352e9680b0cab2e057b11082d Mon Sep 17 00:00:00 2001
+From f3e7b392cc09f26420af2bc5ca3981aedcace55b Mon Sep 17 00:00:00 2001
 From: artcashin <64659740+artcashin@users.noreply.github.com>
-Date: Thu, 29 Oct 2026 10:53:11 -0400
+Date: Thu, 29 Oct 2026 11:08:38 -0400
 Subject: [PATCH] fix(agent): cite_quote finds a PDF the widget cache served
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
- src/agent/loop.ts                             | 18 +++++++++----
- src/agent/tools/cite-quote.ts                 |  4 ++-
- tests/unit/src/agent/tools/cite-quote.test.ts | 25 ++++++++++++++++++-
- 3 files changed, 40 insertions(+), 7 deletions(-)
+ src/agent/loop.ts                             | 22 ++++--
+ src/agent/tools/cite-quote.ts                 |  4 +-
+ .../agent-loop/cite-quote-cache.test.ts       | 75 +++++++++++++++++++
+ tests/unit/src/agent/tools/cite-quote.test.ts | 25 ++++++-
+ 4 files changed, 119 insertions(+), 7 deletions(-)
+ create mode 100644 tests/integration/agent-loop/cite-quote-cache.test.ts
 
 diff --git a/src/agent/loop.ts b/src/agent/loop.ts
-index d5ca9c6..527d4df 100644
+index d5ca9c6..4adce40 100644
 --- a/src/agent/loop.ts
 +++ b/src/agent/loop.ts
 @@ -67,7 +67,7 @@ import { makeSqlTools } from "./tools/sql";
@@ -43,23 +45,41 @@ index d5ca9c6..527d4df 100644
 +  widgetDataCache.set(key, { items, timestamp: Date.now(), ...(pdf && { pdf }) });
 +}
 +
-+/** The PDF source of a live (unexpired) cache entry for this widget, newest first. */
-+export function getCachedPdf(uuid: string): CachedWidget["pdf"] | null {
-+  const live = [...widgetDataCache.values()].filter((c) => c.pdf && c.items[0]?.uuid === uuid && Date.now() - c.timestamp <= CACHE_TTL_MS);
-+  return live.sort((a, b) => b.timestamp - a.timestamp)[0]?.pdf ?? null;
++/** The PDF source of the live cache entry under exactly this {uuid, args} key. */
++export function getCachedPdf(uuid: string, inputArgs?: Record<string, unknown>): CachedWidget["pdf"] | null {
++  const cached = widgetDataCache.get(widgetCacheKey(uuid, inputArgs));
++  return cached?.pdf && Date.now() - cached.timestamp <= CACHE_TTL_MS ? cached.pdf : null;
  }
  
  function artifactPayloads(events: SSEEvent[]): CopilotArtifact[] {
-@@ -1176,7 +1184,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+@@ -519,6 +527,8 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+   let artifactIdx = 0;
+   const tables: TableInfo[] = [];
+   const citedWidgets = new Map<string, CitedWidget>();
++  // PDFs of widgets served from the cache this request; request-scoped, so no second store.
++  const cachedPdfs = new Map<string, NonNullable<ReturnType<typeof getCachedPdf>>>();
+   const mcpCitations: McpCitation[] = [];
+   const intermediateCitations: Citation[] = [];
+   // Seed from the cross-request row cache so a follow-up user message in
+@@ -1176,7 +1186,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
          ...sqlToolSet,
          ...nativeToolSet,
          ...(widgetDataToolEnabled && { get_widget_data: makeWidgetDataTool() }),
 -        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets }) }),
-+        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets, cachedPdf: getCachedPdf }) }),
++        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets, cachedPdf: (uuid) => cachedPdfs.get(uuid) }) }),
          ...(hasSkillsCatalog && { get_skill_content: makeGetSkillContentTool() }),
          ...(suggestionsVia === "tool" &&
            promptSuggestionsEnabled && {
-@@ -1865,7 +1873,7 @@ export async function cacheWidgetItemsFromReboot(
+@@ -1749,6 +1759,8 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+         const cached = getCachedItems(fetch.request.widget_uuid, fetch.cacheInputArgs);
+         if (cached) {
+           cachedItems.push(...cached);
++          const pdf = getCachedPdf(fetch.request.widget_uuid, fetch.cacheInputArgs);
++          if (pdf) cachedPdfs.set(fetch.request.widget_uuid, pdf);
+         } else {
+           uncachedFetches.push(fetch);
+         }
+@@ -1865,7 +1877,7 @@ export async function cacheWidgetItemsFromReboot(
          : widget
            ? effectiveWidgetInputArgs(widget, query?.input_args)
            : query?.input_args;
@@ -87,8 +107,89 @@ index 00d8343..7e9c797 100644
      const bytes = pdf?.content
        ? Uint8Array.from(Buffer.from(pdf.content, "base64"))
        : pdf?.url
+diff --git a/tests/integration/agent-loop/cite-quote-cache.test.ts b/tests/integration/agent-loop/cite-quote-cache.test.ts
+new file mode 100644
+index 0000000..1a29b6c
+--- /dev/null
++++ b/tests/integration/agent-loop/cite-quote-cache.test.ts
+@@ -0,0 +1,75 @@
++/**
++ * 0018: cite_quote after a widget-cache hit must use the PDF cached under the
++ * SAME {uuid, args} key the cache hit served, not another entry for that uuid.
++ */
++import { describe, it, expect, beforeEach } from "bun:test";
++import { cacheWidgetItemsFromReboot, runAgentLoop } from "../../../src/agent/loop";
++import type { Citation } from "../../../src/protocol/citations";
++import type { QueryRequest, ToolMessage, Widget } from "../../../src/protocol/types";
++import { llmCallsTool, llmEmitsText, makeSequencedSpyMockLlm } from "../../helpers/mock-llm";
++import { collectGenerator } from "../../helpers/sse-reader";
++import { clearAllModuleState } from "../../helpers/clear-state";
++
++function pdfBase64(lines: string[]): string {
++  const esc = (s: string) => s.replace(/[\\()]/g, (c) => `\\${c}`);
++  const stream = `BT /F1 12 Tf 72 720 Td 16 TL ${lines.map((l) => `(${esc(l)}) '`).join(" ")} ET`;
++  const objects = [
++    "<< /Type /Catalog /Pages 2 0 R >>",
++    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
++    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
++    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
++    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
++  ];
++  let out = "%PDF-1.4\n";
++  const offsets = objects.map((body, i) => {
++    const at = out.length;
++    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
++    return at;
++  });
++  const xref = out.length;
++  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
++  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
++  return btoa(out);
++}
++
++const UUID = "w-pdf";
++const report: Widget = {
++  uuid: UUID, origin: "b", widget_id: "report", name: "Report", description: "",
++  params: [{ name: "year", type: "text", description: "", current_value: "" }],
++} as unknown as Widget;
++const toolFor = (year: string, line: string): ToolMessage =>
++  ({
++    role: "tool",
++    function: "get_widget_data",
++    input_arguments: { data_sources: [{ widget_uuid: UUID, input_args: { year } }] },
++    data: [{ items: [{ content: pdfBase64([line]), data_format: { data_type: "pdf", filename: `${year}.pdf` } }] }],
++  }) as unknown as ToolMessage;
++
++describe("cite_quote through the loop after a cache hit", () => {
++  beforeEach(() => clearAllModuleState());
++
++  it("highlights from the PDF of the args the cache served, not the newest entry for the uuid", async () => {
++    await cacheWidgetItemsFromReboot(toolFor("2024", "Alpha revenue grew 12 percent."), [report]);
++    await cacheWidgetItemsFromReboot(toolFor("2025", "Beta revenue fell 3 percent."), [report]);
++    const spy = makeSequencedSpyMockLlm([
++      llmCallsTool("get_widget_data", { widgets: [{ widget_uuid: UUID, input_args: { year: "2024" } }] }),
++      llmCallsTool("cite_quote", { widget_uuid: UUID, quote: "Alpha revenue grew 12 percent" }),
++      llmEmitsText("Revenue grew 12 percent."),
++    ]);
++    const events = await collectGenerator(
++      runAgentLoop({
++        request: { messages: [{ role: "human", content: "2024 revenue?" }] } as QueryRequest,
++        rawModelId: "openai:gpt-4o-mini",
++        model: spy.model,
++        allWidgets: [report],
++        workspaceState: null,
++        generativeUiEnabled: false,
++        conversationId: "cq-cache-exact",
++      }),
++    );
++    const collection = events.find((e) => e.event === "copilotCitationCollection");
++    const cites = (collection?.data as { citations: Citation[] } | undefined)?.citations ?? [];
++    const boxes = cites.flatMap((c) => (c as unknown as { quote_bounding_boxes?: unknown[][] }).quote_bounding_boxes ?? []);
++    expect(boxes).toHaveLength(1);
++  });
++});
 diff --git a/tests/unit/src/agent/tools/cite-quote.test.ts b/tests/unit/src/agent/tools/cite-quote.test.ts
-index 04e6f3a..e5bcbd2 100644
+index 04e6f3a..a66c8eb 100644
 --- a/tests/unit/src/agent/tools/cite-quote.test.ts
 +++ b/tests/unit/src/agent/tools/cite-quote.test.ts
 @@ -1,7 +1,8 @@
@@ -114,7 +215,7 @@ index 04e6f3a..e5bcbd2 100644
 +    _resetWidgetDataCache();
 +    await cacheWidgetItemsFromReboot(messages[1] as ToolMessage, [pdfWidget]);
 +    const citedWidgets = cited();
-+    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: getCachedPdf };
++    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: (u: string) => getCachedPdf(u, {}) };
 +    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue grew 12 percent" }, ctx)).toBe("Quote highlighted.");
 +    expect(citedWidgets.get(KEY)?.quoteBoxes).toEqual([[expect.objectContaining({ page: 1, top: 92 })]]);
 +  });
@@ -122,7 +223,7 @@ index 04e6f3a..e5bcbd2 100644
 +  it("says Noted. without throwing when nothing was cached", async () => {
 +    _resetWidgetDataCache();
 +    const citedWidgets = cited();
-+    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: getCachedPdf };
++    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: (u: string) => getCachedPdf(u, {}) };
 +    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue grew 12 percent" }, ctx)).toBe("Noted.");
 +    expect(citedWidgets.get(KEY)?.quoteBoxes).toBeUndefined();
 +  });
