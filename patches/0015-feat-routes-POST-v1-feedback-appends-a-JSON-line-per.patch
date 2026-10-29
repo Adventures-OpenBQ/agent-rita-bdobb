@@ -1,0 +1,159 @@
+From a5498ee63802475f4b7ceecf21b2988a3a9ef4f5 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:56:33 -0400
+Subject: [PATCH] feat(routes): POST /v1/feedback appends a JSON line per vote,
+ with the door's principal
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+---
+ src/routes/agents.ts                          |  1 +
+ src/routes/feedback.ts                        | 38 ++++++++++++++++
+ src/server.ts                                 |  2 +
+ .../integration/routes/agents-status.test.ts  |  1 +
+ tests/integration/routes/feedback.test.ts     | 45 +++++++++++++++++++
+ 5 files changed, 87 insertions(+)
+ create mode 100644 src/routes/feedback.ts
+ create mode 100644 tests/integration/routes/feedback.test.ts
+
+diff --git a/src/routes/agents.ts b/src/routes/agents.ts
+index e662224..344d172 100644
+--- a/src/routes/agents.ts
++++ b/src/routes/agents.ts
+@@ -42,6 +42,7 @@ agentsRouter.get("/agents.json", (c) => {
+         "mcp-tools": true,
+         "generative-ui": true,
+         "file-upload": true,
++        feedback: true,
+         "prompt-suggestions": {
+           label: "Follow-up Suggestions",
+           default: true,
+diff --git a/src/routes/feedback.ts b/src/routes/feedback.ts
+new file mode 100644
+index 0000000..e748249
+--- /dev/null
++++ b/src/routes/feedback.ts
+@@ -0,0 +1,38 @@
++import { appendFile, mkdir } from "node:fs/promises";
++import { dirname } from "node:path";
++import { Hono } from "hono";
++import { z } from "zod";
++import { getLogger } from "../lib/logger";
++
++const logger = getLogger(["app", "routes", "feedback"]);
++
++/** OpenBB Workspace's feedback body (agents-for-openbb 42). */
++const FeedbackSchema = z.object({
++  vote: z.enum(["thumbs_up", "thumbs_down"]),
++  tags: z.array(z.string().max(200)).max(20).default([]),
++  user_comment: z.string().max(10_000).default(""),
++  ai_response: z.string().max(100_000).default(""),
++  user_prompt: z.string().max(100_000).default(""),
++  trace_id: z.string().max(200).default(""),
++});
++/** What the door sets (openbq-docker funnel-gateway); anything else is not recorded. */
++const PRINCIPAL_RE = /^github:[1-9][0-9]{0,19}$/;
++
++export const feedbackRouter = new Hono();
++
++feedbackRouter.post("/v1/feedback", async (c) => {
++  const raw = await c.req.json().catch(() => undefined); // non-JSON body -> 400, as 0010 does for /v1/query
++  const parsed = FeedbackSchema.safeParse(raw);
++  if (!parsed.success) return c.json({ error: "Invalid feedback", details: parsed.error.issues }, 400);
++  const principal = c.req.header("X-Rita-Principal");
++  const line = {
++    received_at: new Date().toISOString(),
++    ...(principal && PRINCIPAL_RE.test(principal) ? { principal } : {}),
++    ...parsed.data,
++  };
++  const path = process.env.FEEDBACK_PATH || "/data/feedback.jsonl";
++  await mkdir(dirname(path), { recursive: true });
++  await appendFile(path, `${JSON.stringify(line)}\n`);
++  logger.info("Feedback recorded", { vote: line.vote, principal: line.principal ?? null });
++  return c.body(null, 204);
++});
+diff --git a/src/server.ts b/src/server.ts
+index a7b17eb..73ba1f9 100644
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -7,6 +7,7 @@ import { agentsRouter } from "./routes/agents";
+ import { statusRouter } from "./routes/status";
+ import { queryRouter } from "./routes/query";
+ import { generateRouter } from "./routes/generate";
++import { feedbackRouter } from "./routes/feedback";
+ 
+ const logger = getLogger(["app", "server"]);
+ 
+@@ -29,6 +30,7 @@ app.use("*", async (c, next) => {
+ app.route("/", agentsRouter);
+ app.route("/", statusRouter);
+ app.route("/", queryRouter);
++app.route("/", feedbackRouter);
+ app.route("/", generateRouter);
+ 
+ const PORT = Number(process.env.PORT ?? 7777);
+diff --git a/tests/integration/routes/agents-status.test.ts b/tests/integration/routes/agents-status.test.ts
+index ebdbd67..88fa9e4 100644
+--- a/tests/integration/routes/agents-status.test.ts
++++ b/tests/integration/routes/agents-status.test.ts
+@@ -33,6 +33,7 @@ describe("GET /agents.json", () => {
+     const features = body.openbb_agent_rita.features;
+     expect(features.streaming).toBe(true);
+     expect(features["mcp-tools"]).toBe(true);
++    expect(features.feedback).toBe(true);
+     expect(features["generative-ui"]).toBe(true);
+     expect(features["prompt-suggestions"]).toHaveProperty("label");
+     expect(features["model"]).toHaveProperty("type", "select");
+diff --git a/tests/integration/routes/feedback.test.ts b/tests/integration/routes/feedback.test.ts
+new file mode 100644
+index 0000000..29dec3e
+--- /dev/null
++++ b/tests/integration/routes/feedback.test.ts
+@@ -0,0 +1,45 @@
++/**
++ * Tier 2 -- POST /v1/feedback (agent-rita-bdobb 0015). No LLM.
++ */
++import { afterEach, describe, expect, it } from "bun:test";
++import { mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { Hono } from "hono";
++import { feedbackRouter } from "../../../src/routes/feedback";
++
++const dir = mkdtempSync(join(tmpdir(), "rita-feedback-"));
++const path = join(dir, "sub", "feedback.jsonl");
++process.env.FEEDBACK_PATH = path;
++afterEach(() => rmSync(join(dir, "sub"), { recursive: true, force: true }));
++
++function post(body: string, headers: Record<string, string> = {}) {
++  const app = new Hono();
++  app.route("/", feedbackRouter);
++  return app.request("/v1/feedback", { method: "POST", body, headers: { "Content-Type": "application/json", ...headers } });
++}
++const lines = () => readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
++
++describe("POST /v1/feedback", () => {
++  it("appends one JSON line with a receive time and answers 204", async () => {
++    const res = await post(JSON.stringify({ vote: "thumbs_up", ai_response: "hello", user_prompt: "hi", trace_id: "t-1" }));
++    expect(res.status).toBe(204);
++    const [line] = lines();
++    expect(line).toMatchObject({ vote: "thumbs_up", tags: [], user_comment: "", ai_response: "hello", user_prompt: "hi", trace_id: "t-1" });
++    expect(Number.isNaN(Date.parse(line.received_at))).toBe(false);
++    expect(line.principal).toBeUndefined();
++  });
++
++  it("records the door's X-Rita-Principal, and ignores one that is not github:<id>", async () => {
++    await post(JSON.stringify({ vote: "thumbs_down", tags: ["Other"] }), { "X-Rita-Principal": "github:42" });
++    await post(JSON.stringify({ vote: "thumbs_down" }), { "X-Rita-Principal": "admin" });
++    expect(lines().map((l) => l.principal)).toEqual(["github:42", undefined]);
++  });
++
++  it("answers 400 for a bad body and writes nothing", async () => {
++    for (const body of ["not json", JSON.stringify({ vote: "meh" }), JSON.stringify({ vote: "thumbs_up", tags: "x" })]) {
++      expect((await post(body)).status).toBe(400);
++    }
++    expect(() => readFileSync(path)).toThrow();
++  });
++});
+-- 
+2.54.0 (Apple Git-157)
+
