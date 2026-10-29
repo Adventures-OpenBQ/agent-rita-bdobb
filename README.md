@@ -19,6 +19,9 @@ The recipe for the Rita agent that BDOBB talks to in Adventures in OpenBQ (Episo
 | 0012 | Retry an empty step, also after a client tool |
 | 0013 | Claude through Aperture: native Anthropic provider, explicit provider routing, and helper model defaults |
 | 0014 | Distinguish model authentication, billing, permissions and rate-limit failures in the visible answer |
+| 0015 | `POST /v1/feedback`: validate the vote with zod and append one JSON line (receive time, the door's `X-Rita-Principal`) to `FEEDBACK_PATH` (default `/data/feedback.jsonl`); `agents.json` advertises `feedback: true` |
+| 0016 | `cite_quote`: find a verbatim PDF quote with `unpdf` and attach one box per line to that widget's citation as `quote_bounding_boxes` |
+| 0017 | Send a PDF's extracted text, not a file part, so OpenAI-compatible model servers (vLLM) can read it |
 
 There is no 0005; it was a compose file, which this recipe does not carry.
 
