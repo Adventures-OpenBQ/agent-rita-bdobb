@@ -1,0 +1,132 @@
+From 8ed2c1500890e41352e9680b0cab2e057b11082d Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 10:53:11 -0400
+Subject: [PATCH] fix(agent): cite_quote finds a PDF the widget cache served
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/agent/loop.ts                             | 18 +++++++++----
+ src/agent/tools/cite-quote.ts                 |  4 ++-
+ tests/unit/src/agent/tools/cite-quote.test.ts | 25 ++++++++++++++++++-
+ 3 files changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index d5ca9c6..527d4df 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -67,7 +67,7 @@ import { makeSqlTools } from "./tools/sql";
+ import { makeNativeTools } from "./tools/native";
+ import { makeSuggestionsTool } from "./tools/suggestions";
+ import { makeCreateAppTool } from "./tools/app-artifact";
+-import { makeCiteQuoteTool } from "./tools/cite-quote";
++import { makeCiteQuoteTool, widgetPdf } from "./tools/cite-quote";
+ import {
+   flattenUsage,
+   accumulateUsage,
+@@ -95,6 +95,8 @@ const logger = getLogger(["app", "agent", "loop"]);
+ interface CachedWidget {
+   items: WidgetItem[];
+   timestamp: number;
++  /** The raw PDF source, kept so cite_quote can still highlight it after a cache hit (agent-rita-bdobb 0018). */
++  pdf?: { content?: string; url?: string };
+ }
+ 
+ const widgetDataCache = new Map<string, CachedWidget>();
+@@ -129,9 +131,15 @@ function getCachedItems(uuid: string, inputArgs?: Record<string, unknown>): Widg
+   return cached.items;
+ }
+ 
+-function cacheWidgetItems(uuid: string, inputArgs: Record<string, unknown> | undefined, items: WidgetItem[]): void {
++function cacheWidgetItems(uuid: string, inputArgs: Record<string, unknown> | undefined, items: WidgetItem[], pdf?: CachedWidget["pdf"]): void {
+   const key = widgetCacheKey(uuid, inputArgs);
+-  widgetDataCache.set(key, { items, timestamp: Date.now() });
++  widgetDataCache.set(key, { items, timestamp: Date.now(), ...(pdf && { pdf }) });
++}
++
++/** The PDF source of a live (unexpired) cache entry for this widget, newest first. */
++export function getCachedPdf(uuid: string): CachedWidget["pdf"] | null {
++  const live = [...widgetDataCache.values()].filter((c) => c.pdf && c.items[0]?.uuid === uuid && Date.now() - c.timestamp <= CACHE_TTL_MS);
++  return live.sort((a, b) => b.timestamp - a.timestamp)[0]?.pdf ?? null;
+ }
+ 
+ function artifactPayloads(events: SSEEvent[]): CopilotArtifact[] {
+@@ -1176,7 +1184,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+         ...sqlToolSet,
+         ...nativeToolSet,
+         ...(widgetDataToolEnabled && { get_widget_data: makeWidgetDataTool() }),
+-        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets }) }),
++        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets, cachedPdf: getCachedPdf }) }),
+         ...(hasSkillsCatalog && { get_skill_content: makeGetSkillContentTool() }),
+         ...(suggestionsVia === "tool" &&
+           promptSuggestionsEnabled && {
+@@ -1865,7 +1873,7 @@ export async function cacheWidgetItemsFromReboot(
+         : widget
+           ? effectiveWidgetInputArgs(widget, query?.input_args)
+           : query?.input_args;
+-    cacheWidgetItems(items[i].uuid, inputArgs, [items[i]]);
++    cacheWidgetItems(items[i].uuid, inputArgs, [items[i]], widgetPdf([toolMsg], items[i].uuid) ?? undefined);
+   }
+   return items;
+ }
+diff --git a/src/agent/tools/cite-quote.ts b/src/agent/tools/cite-quote.ts
+index 00d8343..7e9c797 100644
+--- a/src/agent/tools/cite-quote.ts
++++ b/src/agent/tools/cite-quote.ts
+@@ -71,11 +71,13 @@ export async function findQuoteBoxes(bytes: Uint8Array, quote: string): Promise<
+ export interface CiteQuoteContext {
+   messages: Message[];
+   citedWidgets: Map<string, CitedWidget>;
++  /** Fallback for a widget Rita served from its cache, so the request holds no tool message. */
++  cachedPdf?: (widgetUuid: string) => { content?: string; url?: string } | null | undefined;
+ }
+ 
+ export async function runCiteQuote({ widget_uuid, quote }: { widget_uuid: string; quote: string }, ctx: CiteQuoteContext): Promise<string> {
+   try {
+-    const pdf = widgetPdf(ctx.messages, widget_uuid);
++    const pdf = widgetPdf(ctx.messages, widget_uuid) ?? ctx.cachedPdf?.(widget_uuid) ?? null;
+     const bytes = pdf?.content
+       ? Uint8Array.from(Buffer.from(pdf.content, "base64"))
+       : pdf?.url
+diff --git a/tests/unit/src/agent/tools/cite-quote.test.ts b/tests/unit/src/agent/tools/cite-quote.test.ts
+index 04e6f3a..e5bcbd2 100644
+--- a/tests/unit/src/agent/tools/cite-quote.test.ts
++++ b/tests/unit/src/agent/tools/cite-quote.test.ts
+@@ -1,7 +1,8 @@
+ import { describe, expect, it } from "bun:test";
+ import { findQuoteBoxes, runCiteQuote, widgetPdf } from "../../../../../src/agent/tools/cite-quote";
+ import type { CitedWidget } from "../../../../../src/protocol/citations";
+-import type { Message } from "../../../../../src/protocol/types";
++import { _resetWidgetDataCache, cacheWidgetItemsFromReboot, getCachedPdf } from "../../../../../src/agent/loop";
++import type { Message, ToolMessage, Widget } from "../../../../../src/protocol/types";
+ 
+ /** One page, Helvetica 12 pt, 16 pt leading, first baseline at y = 704 (BDOBB's src/test/pdfFixture.ts). */
+ function pdfBase64(lines: string[]): string {
+@@ -75,3 +76,25 @@ describe("runCiteQuote", () => {
+     expect(citedWidgets.get(KEY)?.quoteBoxes).toBeUndefined();
+   });
+ });
++
++describe("runCiteQuote after a widget-cache hit (0018)", () => {
++  const pdfWidget = { uuid: UUID, origin: "b", widget_id: "report", name: "Report", description: "", params: [] } as unknown as Widget;
++  const humanOnly = [{ role: "human", content: "again?" }] as unknown as Message[];
++
++  it("highlights from the PDF source cached when the tool message first arrived", async () => {
++    _resetWidgetDataCache();
++    await cacheWidgetItemsFromReboot(messages[1] as ToolMessage, [pdfWidget]);
++    const citedWidgets = cited();
++    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: getCachedPdf };
++    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue grew 12 percent" }, ctx)).toBe("Quote highlighted.");
++    expect(citedWidgets.get(KEY)?.quoteBoxes).toEqual([[expect.objectContaining({ page: 1, top: 92 })]]);
++  });
++
++  it("says Noted. without throwing when nothing was cached", async () => {
++    _resetWidgetDataCache();
++    const citedWidgets = cited();
++    const ctx = { messages: humanOnly, citedWidgets, cachedPdf: getCachedPdf };
++    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue grew 12 percent" }, ctx)).toBe("Noted.");
++    expect(citedWidgets.get(KEY)?.quoteBoxes).toBeUndefined();
++  });
++});
+-- 
+2.54.0 (Apple Git-157)
+
