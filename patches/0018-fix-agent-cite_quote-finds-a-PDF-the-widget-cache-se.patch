@@ -119,7 +119,7 @@ index 0000000..843cafb
 + */
 +import { describe, it, expect, beforeEach } from "bun:test";
 +import { cacheWidgetItemsFromReboot, runAgentLoop } from "../../../src/agent/loop";
-+import type { Citation } from "../../../src/protocol/citations";
++import type { Citation } from "../../../src/protocol/types";
 +import type { QueryRequest, ToolMessage, Widget } from "../../../src/protocol/types";
 +import { llmCallsTool, llmEmitsText, makeSequencedSpyMockLlm } from "../../helpers/mock-llm";
 +import { collectGenerator } from "../../helpers/sse-reader";
