@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 10:12:18 -0500
+Subject: [PATCH] test(routes): query.test.ts mock keeps the real providers
+ exports
+
+Bun mock.module is process-wide. The mock exported only resolveModel and
+allModels, so any later test file importing providerOptionsFor or
+PROVIDER_OPTIONS (agent/loop.ts, lib/llm.ts, providers.test.ts) failed to
+load, depending on file order.
+---
+ tests/integration/routes/query.test.ts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/tests/integration/routes/query.test.ts b/tests/integration/routes/query.test.ts
+index 10ede6f..a06a981 100644
+--- a/tests/integration/routes/query.test.ts
++++ b/tests/integration/routes/query.test.ts
+@@ -16,7 +16,11 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
+ // returns our deterministic mock.
+ import { makeMockLlm, llmEmitsText } from "../../helpers/mock-llm";
+ 
++// Spread the real module: Bun's mock.module is process-wide, so a mock that drops exports
++// breaks every later test file that imports them (providerOptionsFor, PROVIDER_OPTIONS).
++const realProviders = await import("../../../src/lib/providers");
+ mock.module("../../../src/lib/providers", () => ({
++  ...realProviders,
+   resolveModel: () => makeMockLlm(llmEmitsText("ok from mock")),
+   allModels: () => [],
+ }));
