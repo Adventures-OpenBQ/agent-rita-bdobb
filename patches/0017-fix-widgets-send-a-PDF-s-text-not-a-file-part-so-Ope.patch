@@ -1,0 +1,283 @@
+From 7f6410789faa8da5ceb243c9ed0d93c45fc8c0af Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 10:13:39 -0400
+Subject: [PATCH] fix(widgets): send a PDF's text, not a file part, so
+ OpenAI-compatible servers can read it
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+---
+ src/widgets/parse.ts                          | 26 ++---
+ .../agent-loop/file-widget.test.ts            | 46 +++++++--
+ tests/unit/src/widgets/parse.test.ts          | 98 +++++++++++--------
+ 3 files changed, 106 insertions(+), 64 deletions(-)
+
+diff --git a/src/widgets/parse.ts b/src/widgets/parse.ts
+index af6c795..4761bc4 100644
+--- a/src/widgets/parse.ts
++++ b/src/widgets/parse.ts
+@@ -1,5 +1,6 @@
+ import type { ImagePart, FilePart } from "ai";
+ import * as XLSX from "xlsx";
++import { extractText, getDocumentProxy } from "unpdf";
+ import type { Widget, ToolMessage } from "../protocol/types";
+ import { getLogger } from "../lib/logger";
+ 
+@@ -68,6 +69,12 @@ export interface WidgetItem {
+ const classifyItem = _classifyItem;
+ const imageMediaType = _imageMediaType;
+ 
++/** A PDF's text, for model servers that take no `file` part (the Spark's vLLM answers 400). */
++async function pdfText(bytes: Uint8Array): Promise<string> {
++  const { text } = await extractText(await getDocumentProxy(bytes), { mergePages: true });
++  return text;
++}
++
+ /**
+  * Test-only export. Inline minimal CSV → JSON converter. Note: does NOT
+  * handle escaped double-quotes (`""` inside a quoted field) — the bare
+@@ -180,12 +187,11 @@ export async function extractWidgetItems(
+             logger.warn("PDF too large, skipping", { approxMb: Math.round(approxBytes / 1024 / 1024) });
+           } else {
+             logger.debug("Inline PDF", { filename: dataFormat?.filename ?? "unknown" });
+-            mediaParts.push({
+-              type: "file",
+-              data: raw.content,
+-              mediaType: "application/pdf",
+-              filename: dataFormat?.filename,
+-            });
++            try {
++              contentParts.push(await pdfText(Uint8Array.from(Buffer.from(raw.content, "base64"))));
++            } catch (e) {
++              logger.error("Failed to parse inline PDF", { error: e });
++            }
+           }
+         } else if (kind === "xlsx") {
+           try {
+@@ -215,13 +221,7 @@ export async function extractWidgetItems(
+               if (buf.byteLength > MAX_PDF_BYTES) {
+                 logger.warn("Fetched PDF too large, skipping", { sizeMb: Math.round(buf.byteLength / 1024 / 1024) });
+               } else {
+-                const b64 = Buffer.from(buf).toString("base64");
+-                mediaParts.push({
+-                  type: "file",
+-                  data: b64,
+-                  mediaType: "application/pdf",
+-                  filename: dataFormat?.filename ?? url.split("/").pop(),
+-                });
++                contentParts.push(await pdfText(new Uint8Array(buf)));
+               }
+             }
+           } catch (e) {
+diff --git a/tests/integration/agent-loop/file-widget.test.ts b/tests/integration/agent-loop/file-widget.test.ts
+index 52b3d51..eb8204b 100644
+--- a/tests/integration/agent-loop/file-widget.test.ts
++++ b/tests/integration/agent-loop/file-widget.test.ts
+@@ -98,9 +98,35 @@ describe("file widget — image inline content reaches the LLM as ImagePart", ()
+   });
+ });
+ 
+-describe("file widget — PDF inline content reaches the LLM as FilePart", () => {
+-  it("regression: prior tool message with pdf base64 → FilePart with application/pdf in user content", async () => {
+-    // "%PDF" header in base64 (`JVBERi0=`).
++/**
++ * A one-page PDF for tests that need a real document: Helvetica 12 pt, 16 pt
++ * leading, the first line's baseline at y = 704 on a US Letter page. Verified to
++ * parse in pdfplumber 0.11.10 and unpdf 1.6.2 (2026-10-28).
++ */
++function pdfBase64(lines: string[]): string {
++  const esc = (s: string) => s.replace(/[\\()]/g, (c) => `\\${c}`);
++  const stream = `BT /F1 12 Tf 72 720 Td 16 TL ${lines.map((l) => `(${esc(l)}) '`).join(" ")} ET`;
++  const objects = [
++    "<< /Type /Catalog /Pages 2 0 R >>",
++    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
++    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
++    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
++    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
++  ];
++  let out = "%PDF-1.4\n";
++  const offsets = objects.map((body, i) => {
++    const at = out.length;
++    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
++    return at;
++  });
++  const xref = out.length;
++  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
++  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
++  return btoa(out);
++}
++
++describe("file widget — PDF inline content reaches the LLM as text", () => {
++  it("regression: prior tool message with pdf base64 → the PDF's text in user content, no file part", async () => {
+     const priorTool: ToolMessage = {
+       role: "tool",
+       function: "get_widget_data",
+@@ -109,7 +135,7 @@ describe("file widget — PDF inline content reaches the LLM as FilePart", () =>
+         {
+           items: [
+             {
+-              content: "JVBERi0xLjQK",
++              content: pdfBase64(["Report page one: revenue grew 12 percent."]),
+               data_format: { data_type: "pdf", filename: "report.pdf" },
+             },
+           ],
+@@ -134,11 +160,13 @@ describe("file widget — PDF inline content reaches the LLM as FilePart", () =>
+       }),
+     );
+     const parts = findUserPartsMessage(spy.calls[0] as LlmCall) ?? [];
+-    const filePart = (parts as Array<Record<string, unknown>>).find(
+-      (p) => p.mediaType === "application/pdf",
+-    );
+-    expect(filePart).toBeDefined();
+-    expect((filePart as { filename: string }).filename).toBe("report.pdf");
++    const textPart = (parts as Array<Record<string, unknown>>)
++      .map((p) => (typeof p.text === "string" ? p.text : ""))
++      .join("\n");
++    expect(textPart).toContain("revenue grew 12 percent");
++    expect(
++      (parts as Array<Record<string, unknown>>).some((p) => p.type === "file"),
++    ).toBe(false);
+   });
+ });
+ 
+diff --git a/tests/unit/src/widgets/parse.test.ts b/tests/unit/src/widgets/parse.test.ts
+index ba5f74f..a8cfe44 100644
+--- a/tests/unit/src/widgets/parse.test.ts
++++ b/tests/unit/src/widgets/parse.test.ts
+@@ -282,8 +282,8 @@ describe("extractWidgetItems — URL-based PDF / CSV / text (mocked fetch)", ()
+     }) as unknown as typeof fetch;
+   }
+ 
+-  it("PDF URL: fetches, base64-encodes, emits FilePart with inferred filename when not in data_format", async () => {
+-    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
++  it("PDF URL: fetches and hands the model the PDF's text, no file part", async () => {
++    const pdfBytes = Buffer.from(pdfBase64(["Fetched page text."]), "base64");
+     mockFetch(() => new Response(pdfBytes));
+     const tm = msg(
+       [
+@@ -296,36 +296,8 @@ describe("extractWidgetItems — URL-based PDF / CSV / text (mocked fetch)", ()
+       [{ widget_uuid: "u-1" }],
+     );
+     const items = await extractWidgetItems(tm, [widget("u-1")]);
+-    const part = items[0].parts![0] as {
+-      type: "file";
+-      mediaType: string;
+-      filename?: string;
+-      data: string;
+-    };
+-    expect(part.type).toBe("file");
+-    expect(part.mediaType).toBe("application/pdf");
+-    expect(part.filename).toBe("report.pdf");
+-    expect(part.data).toBe(Buffer.from(pdfBytes).toString("base64"));
+-  });
+-
+-  it("PDF URL: data_format.filename overrides URL-suffix fallback", async () => {
+-    mockFetch(() => new Response(new Uint8Array([0])));
+-    const tm = msg(
+-      [
+-        {
+-          items: [
+-            {
+-              url: "https://example.com/path/report.pdf",
+-              data_format: { data_type: "pdf", filename: "explicit.pdf" },
+-            },
+-          ],
+-        },
+-      ],
+-      [{ widget_uuid: "u-1" }],
+-    );
+-    const items = await extractWidgetItems(tm, [widget("u-1")]);
+-    const part = items[0].parts![0] as { filename: string };
+-    expect(part.filename).toBe("explicit.pdf");
++    expect(items[0].parts).toBeUndefined();
++    expect(items[0].content).toContain("Fetched page text.");
+   });
+ 
+   it("PDF URL: skips when fetched body exceeds size cap", async () => {
+@@ -393,13 +365,13 @@ describe("extractWidgetItems — URL-based PDF / CSV / text (mocked fetch)", ()
+ });
+ 
+ describe("extractWidgetItems — inline PDF", () => {
+-  it("emits a file media part with application/pdf", async () => {
++  it("emits the PDF's text as content, no file media part", async () => {
+     const tm = msg(
+       [
+         {
+           items: [
+             {
+-              content: "JVBERi0xLjQK",
++              content: pdfBase64(["Inline page text."]),
+               data_format: { data_type: "pdf", filename: "report.pdf" },
+             },
+           ],
+@@ -408,14 +380,17 @@ describe("extractWidgetItems — inline PDF", () => {
+       [{ widget_uuid: "u-1" }],
+     );
+     const items = await extractWidgetItems(tm, [widget("u-1")]);
+-    const part = items[0].parts![0] as {
+-      type: "file";
+-      mediaType: string;
+-      filename?: string;
+-    };
+-    expect(part.type).toBe("file");
+-    expect(part.mediaType).toBe("application/pdf");
+-    expect(part.filename).toBe("report.pdf");
++    expect(items[0].parts).toBeUndefined();
++    expect(items[0].content).toContain("Inline page text.");
++  });
++
++  it("skips a corrupt inline PDF without throwing (no item, no parts)", async () => {
++    const tm = msg(
++      [{ items: [{ content: "JVBERi0xLjQK", data_format: { data_type: "pdf" } }] }],
++      [{ widget_uuid: "u-1" }],
++    );
++    const items = await extractWidgetItems(tm, [widget("u-1")]);
++    expect(items).toHaveLength(0);
+   });
+ 
+   it("skips PDFs whose decoded size exceeds the limit", async () => {
+@@ -514,3 +489,42 @@ describe("extractWidgetItems — xlsx", () => {
+     }
+   });
+ });
++
++/**
++ * A one-page PDF for tests that need a real document: Helvetica 12 pt, 16 pt
++ * leading, the first line's baseline at y = 704 on a US Letter page. Verified to
++ * parse in pdfplumber 0.11.10 and unpdf 1.6.2 (2026-10-28).
++ */
++function pdfBase64(lines: string[]): string {
++  const esc = (s: string) => s.replace(/[\\()]/g, (c) => `\\${c}`);
++  const stream = `BT /F1 12 Tf 72 720 Td 16 TL ${lines.map((l) => `(${esc(l)}) '`).join(" ")} ET`;
++  const objects = [
++    "<< /Type /Catalog /Pages 2 0 R >>",
++    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
++    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
++    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
++    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
++  ];
++  let out = "%PDF-1.4\n";
++  const offsets = objects.map((body, i) => {
++    const at = out.length;
++    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
++    return at;
++  });
++  const xref = out.length;
++  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
++  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
++  return btoa(out);
++}
++
++describe("extractWidgetItems — PDFs", () => {
++  it("hands the model the PDF's text, not a file part (vLLM refuses file parts)", async () => {
++    const pdf = pdfBase64(["Conformance fixture page one.", "Revenue grew 12 percent in 2025."]);
++    const [item] = await extractWidgetItems(
++      { role: "tool", function: "get_widget_data", input_arguments: { data_sources: [{ widget_uuid: "u" }] }, data: [{ items: [{ content: pdf, data_format: { data_type: "pdf", filename: "r.pdf" } }] }] } as never,
++      [{ uuid: "u", origin: "b", widget_id: "report", name: "Report", description: "", params: [] }],
++    );
++    expect(item.parts).toBeUndefined();
++    expect(item.content).toContain("Revenue grew 12 percent in 2025.");
++  });
++});
+-- 
+2.54.0 (Apple Git-157)
+

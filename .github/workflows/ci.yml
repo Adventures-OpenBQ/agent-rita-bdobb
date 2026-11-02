@@ -1,0 +1,20 @@
+# Copyright 2026 SecretoftheUniverse.com LLC. SPDX-License-Identifier: Apache-2.0
+# Every patch must apply to the pinned upstream commit, and the patched Rita must pass its own
+# suite (offline) and type-check. The live tests against a deployed Rita stay in BDOBB.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recipe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned upstream and apply the patches
+        run: scripts/build.sh --check-only
+      - name: Rita suite and type-check
+        run: scripts/test-aperture.sh

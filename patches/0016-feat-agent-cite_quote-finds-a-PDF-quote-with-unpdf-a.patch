@@ -1,0 +1,348 @@
+From 510373bee1e8f6ec10e4cc167c4db4ac0fc1e25b Mon Sep 17 00:00:00 2001
+From: artcashin <64659740+artcashin@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 10:00:32 -0400
+Subject: [PATCH] feat(agent): cite_quote finds a PDF quote with unpdf and
+ attaches quote_bounding_boxes
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+---
+ src/agent/loop.ts                             |   2 +
+ src/agent/prompt.ts                           |   1 +
+ src/agent/tools/cite-quote.ts                 | 109 ++++++++++++++++++
+ src/protocol/citations.ts                     |   6 +-
+ src/protocol/types.ts                         |  12 +-
+ tests/unit/src/agent/prompt.test.ts           |   4 +
+ tests/unit/src/agent/tools/cite-quote.test.ts |  77 +++++++++++++
+ tests/unit/src/protocol/citations.test.ts     |  10 ++
+ 8 files changed, 218 insertions(+), 3 deletions(-)
+ create mode 100644 src/agent/tools/cite-quote.ts
+ create mode 100644 tests/unit/src/agent/tools/cite-quote.test.ts
+
+diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+index b6ea30d..d5ca9c6 100644
+--- a/src/agent/loop.ts
++++ b/src/agent/loop.ts
+@@ -67,6 +67,7 @@ import { makeSqlTools } from "./tools/sql";
+ import { makeNativeTools } from "./tools/native";
+ import { makeSuggestionsTool } from "./tools/suggestions";
+ import { makeCreateAppTool } from "./tools/app-artifact";
++import { makeCiteQuoteTool } from "./tools/cite-quote";
+ import {
+   flattenUsage,
+   accumulateUsage,
+@@ -1175,6 +1176,7 @@ export async function* runAgentLoop(options: AgentRunOptions): AsyncGenerator<SS
+         ...sqlToolSet,
+         ...nativeToolSet,
+         ...(widgetDataToolEnabled && { get_widget_data: makeWidgetDataTool() }),
++        ...(hasWidgets && { cite_quote: makeCiteQuoteTool({ messages: request.messages, citedWidgets }) }),
+         ...(hasSkillsCatalog && { get_skill_content: makeGetSkillContentTool() }),
+         ...(suggestionsVia === "tool" &&
+           promptSuggestionsEnabled && {
+diff --git a/src/agent/prompt.ts b/src/agent/prompt.ts
+index 2483a4d..6133dad 100644
+--- a/src/agent/prompt.ts
++++ b/src/agent/prompt.ts
+@@ -55,6 +55,7 @@ const BASE_PROMPT =
+   "For 'what widgets do I have', call search_widgets with an empty query \"\" to list them.\n" +
+   "- search_widgets returns a `location` field with values 'added_to_context' / 'on_dashboard' / 'connected' — describe these to the user as 'added to context', 'on the dashboard', and 'connected' respectively.\n" +
+   "- search_widgets `kind`: 'data' (fetchable), 'note' (user text), 'display' (embedded).\n" +
++  "- When your answer relies on a PDF widget's text, call cite_quote with that widget's widget_uuid and a short quote copied verbatim from the PDF, so the user sees it highlighted.\n" +
+   "- File widgets are tagged [FILE: type] and hold NO data until loaded: call get_widget_data on the widget's uuid FIRST. " +
+   "Images and inline PDFs come back as content you read directly; CSV/XLSX come back as rows for the SQL family; " +
+   "PDF/DOCX/TXT/MD/HTML are ALSO ingested into the RAG store by that same get_widget_data call, after which query_documents searches them by question. " +
+diff --git a/src/agent/tools/cite-quote.ts b/src/agent/tools/cite-quote.ts
+new file mode 100644
+index 0000000..00d8343
+--- /dev/null
++++ b/src/agent/tools/cite-quote.ts
+@@ -0,0 +1,109 @@
++/**
++ * `cite_quote` (agent-rita-bdobb 0016): the model names a PDF widget and a
++ * verbatim quote; Rita finds it with unpdf and attaches one box per line to that
++ * widget's citation (quote_bounding_boxes). A quote it cannot find costs a debug
++ * line, never an error to the model.
++ */
++import { tool } from "ai";
++import { getDocumentProxy } from "unpdf";
++import { z } from "zod";
++import type { CitedWidget } from "../../protocol/citations";
++import type { Message, QuoteBoundingBox, ToolMessage } from "../../protocol/types";
++import { getLogger } from "../../lib/logger";
++
++const logger = getLogger(["app", "tools", "cite_quote"]);
++const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
++
++/** The PDF the latest get_widget_data round returned for this widget, if any. */
++export function widgetPdf(messages: Message[], widgetUuid: string): { content?: string; url?: string } | null {
++  for (const m of [...messages].reverse()) {
++    if (m.role !== "tool") continue;
++    const t = m as ToolMessage;
++    if (t.function !== "get_widget_data") continue;
++    const sources = (t.input_arguments?.data_sources as Array<{ widget_uuid?: string }> | undefined) ?? [];
++    const i = sources.findIndex((s) => s.widget_uuid === widgetUuid);
++    const item = i >= 0 ? t.data?.[i]?.items?.find((it) => (it.data_format as { data_type?: string } | undefined)?.data_type === "pdf") : undefined;
++    if (item) return { content: typeof item.content === "string" && item.content ? item.content : undefined, url: typeof item.url === "string" && item.url ? item.url : undefined };
++  }
++  return null;
++}
++
++type TextItem = { str?: string; transform: number[]; width: number; height: number };
++
++/**
++ * One box per line the quote covers, on the first page whose text contains it.
++ * ponytail: item-granular (a partly quoted text item is boxed whole) and page-local; go per-glyph if highlights look too wide.
++ */
++export async function findQuoteBoxes(bytes: Uint8Array, quote: string): Promise<QuoteBoundingBox[]> {
++  const want = norm(quote);
++  if (!want) return [];
++  const doc = await getDocumentProxy(bytes);
++  for (let p = 1; p <= doc.numPages; p++) {
++    const page = await doc.getPage(p);
++    const height = page.getViewport({ scale: 1 }).height;
++    const items = ((await page.getTextContent()).items as TextItem[]).filter((it) => typeof it.str === "string" && norm(it.str) !== "");
++    let text = "";
++    const spans = items.map((it) => {
++      if (text) text += " ";
++      const start = text.length;
++      text += norm(it.str as string);
++      return [start, text.length] as const;
++    });
++    const at = text.indexOf(want);
++    if (at < 0) continue;
++    const lines = new Map<number, QuoteBoundingBox>();
++    items.forEach((it, i) => {
++      const [s, e] = spans[i];
++      if (e <= at || s >= at + want.length) return;
++      const [, , , , x, y] = it.transform;
++      const box = { text: it.str as string, page: p, x0: x, top: height - y - it.height, x1: x + it.width, bottom: height - y };
++      const key = Math.round(y);
++      const line = lines.get(key);
++      lines.set(key, line
++        ? { ...line, text: `${line.text} ${box.text}`, x0: Math.min(line.x0, box.x0), x1: Math.max(line.x1, box.x1), top: Math.min(line.top, box.top), bottom: Math.max(line.bottom, box.bottom) }
++        : box);
++    });
++    return [...lines.values()];
++  }
++  return [];
++}
++
++export interface CiteQuoteContext {
++  messages: Message[];
++  citedWidgets: Map<string, CitedWidget>;
++}
++
++export async function runCiteQuote({ widget_uuid, quote }: { widget_uuid: string; quote: string }, ctx: CiteQuoteContext): Promise<string> {
++  try {
++    const pdf = widgetPdf(ctx.messages, widget_uuid);
++    const bytes = pdf?.content
++      ? Uint8Array.from(Buffer.from(pdf.content, "base64"))
++      : pdf?.url
++        ? new Uint8Array(await (await fetch(pdf.url, { signal: AbortSignal.timeout(30_000) })).arrayBuffer())
++        : null;
++    const boxes = bytes ? await findQuoteBoxes(bytes, quote) : [];
++    const cited = [...ctx.citedWidgets.values()].filter((c) => c.widgetUuid === widget_uuid);
++    if (boxes.length === 0 || cited.length === 0) {
++      logger.debug("cite_quote: nothing to highlight", { widget_uuid, boxes: boxes.length, cited: cited.length, hasPdf: pdf !== null });
++      return "Noted.";
++    }
++    for (const c of cited) c.quoteBoxes = [...(c.quoteBoxes ?? []), boxes];
++    return "Quote highlighted.";
++  } catch (error) {
++    logger.debug("cite_quote failed", { widget_uuid, error });
++    return "Noted.";
++  }
++}
++
++export const citeQuoteSchema = z.object({
++  widget_uuid: z.string().min(1).describe("The PDF widget's widget_uuid, exactly as in get_widget_data."),
++  quote: z.string().min(1).max(500).describe("A short passage copied verbatim from that PDF."),
++});
++
++export function makeCiteQuoteTool(ctx: CiteQuoteContext) {
++  return tool({
++    description: "Highlight a verbatim quote from a PDF widget you have loaded, so the user sees where your answer comes from. Call once per quote you rely on.",
++    inputSchema: citeQuoteSchema,
++    execute: async (args) => runCiteQuote(args, ctx),
++  });
++}
+diff --git a/src/protocol/citations.ts b/src/protocol/citations.ts
+index 6079a5c..0d76740 100644
+--- a/src/protocol/citations.ts
++++ b/src/protocol/citations.ts
+@@ -1,10 +1,11 @@
+-import type { Citation, Widget } from "./types";
++import type { Citation, QuoteBoundingBox, Widget } from "./types";
+ import type { McpCitation } from "../mcp/results";
+ 
+ export interface CitedWidget {
+   widget: Widget;
+   inputArgs: Record<string, unknown>;
+   widgetUuid?: string;
++  quoteBoxes?: QuoteBoundingBox[][];
+ }
+ 
+ export async function buildAllCitations(
+@@ -40,7 +41,7 @@ export async function buildWidgetCitations(
+   citedWidgets: Map<string, CitedWidget>,
+ ): Promise<Citation[]> {
+   const citations: Citation[] = [];
+-  for (const [mapKey, { widget, inputArgs, widgetUuid }] of citedWidgets) {
++  for (const [mapKey, { widget, inputArgs, widgetUuid, quoteBoxes }] of citedWidgets) {
+     const sourceWidgetUuid = widgetUuid ?? mapKey;
+     const id = await citationUuid(sourceWidgetUuid, inputArgs);
+     const filteredArgs: Record<string, unknown> = {};
+@@ -83,6 +84,7 @@ export async function buildWidgetCitations(
+         ...filteredArgs,
+       }],
+       signature: "",
++      ...(quoteBoxes?.length ? { quote_bounding_boxes: quoteBoxes } : {}),
+     });
+   }
+   return citations;
+diff --git a/src/protocol/types.ts b/src/protocol/types.ts
+index 4e40f66..b0466e6 100644
+--- a/src/protocol/types.ts
++++ b/src/protocol/types.ts
+@@ -301,12 +301,22 @@ export type CitationSourceInfo =
+   | WebCitationSourceInfo
+   | FileCitationSourceInfo;
+ 
++/** One highlighted line of a cited PDF quote, in PDF points from the page's top-left (pdfplumber's convention). */
++export interface QuoteBoundingBox {
++  text: string;
++  page: number;
++  x0: number;
++  top: number;
++  x1: number;
++  bottom: number;
++}
++
+ export interface Citation {
+   id: string;
+   source_info: CitationSourceInfo;
+   details: Array<Record<string, unknown>>;
+   signature: string;
+-  quote_bounding_boxes?: null;
++  quote_bounding_boxes?: QuoteBoundingBox[][];
+ }
+ 
+ export interface CitationCollection {
+diff --git a/tests/unit/src/agent/prompt.test.ts b/tests/unit/src/agent/prompt.test.ts
+index d320181..f05805a 100644
+--- a/tests/unit/src/agent/prompt.test.ts
++++ b/tests/unit/src/agent/prompt.test.ts
+@@ -135,6 +135,10 @@ describe("buildSystemPrompt — base content", () => {
+     }).format(new Date());
+     expect(out).toContain(expected);
+   });
++
++  it("tells the model to cite a verbatim PDF quote with cite_quote", () => {
++    expect(buildSystemPrompt(req())).toContain("cite_quote");
++  });
+ });
+ 
+ describe("buildSystemPrompt — widget sections", () => {
+diff --git a/tests/unit/src/agent/tools/cite-quote.test.ts b/tests/unit/src/agent/tools/cite-quote.test.ts
+new file mode 100644
+index 0000000..04e6f3a
+--- /dev/null
++++ b/tests/unit/src/agent/tools/cite-quote.test.ts
+@@ -0,0 +1,77 @@
++import { describe, expect, it } from "bun:test";
++import { findQuoteBoxes, runCiteQuote, widgetPdf } from "../../../../../src/agent/tools/cite-quote";
++import type { CitedWidget } from "../../../../../src/protocol/citations";
++import type { Message } from "../../../../../src/protocol/types";
++
++/** One page, Helvetica 12 pt, 16 pt leading, first baseline at y = 704 (BDOBB's src/test/pdfFixture.ts). */
++function pdfBase64(lines: string[]): string {
++  const esc = (s: string) => s.replace(/[\\()]/g, (c) => `\\${c}`);
++  const stream = `BT /F1 12 Tf 72 720 Td 16 TL ${lines.map((l) => `(${esc(l)}) '`).join(" ")} ET`;
++  const objects = [
++    "<< /Type /Catalog /Pages 2 0 R >>",
++    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
++    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
++    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
++    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
++  ];
++  let out = "%PDF-1.4\n";
++  const offsets = objects.map((body, i) => { const at = out.length; out += `${i + 1} 0 obj\n${body}\nendobj\n`; return at; });
++  const xref = out.length;
++  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
++  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
++  return Buffer.from(out, "latin1").toString("base64");
++}
++
++const PDF = pdfBase64(["Conformance fixture page one.", "Revenue grew 12 percent in 2025."]);
++const bytes = () => Uint8Array.from(Buffer.from(PDF, "base64"));
++const UUID = "7d3e9f10-2b4c-4e5a-8f60-1a2b3c4d5e6f";
++const messages = [
++  { role: "human", content: "q" },
++  {
++    role: "tool",
++    function: "get_widget_data",
++    input_arguments: { data_sources: [{ widget_uuid: "other" }, { widget_uuid: UUID }] },
++    data: [{ items: [{ content: "[]" }] }, { items: [{ content: PDF, data_format: { data_type: "pdf", filename: "r.pdf" } }] }],
++  },
++] as unknown as Message[];
++const KEY = `${UUID}|{}`;
++const cited = (): Map<string, CitedWidget> =>
++  new Map([[KEY, { widget: { uuid: UUID, origin: "b", widget_id: "report", name: "Report", description: "", params: [] }, inputArgs: {}, widgetUuid: UUID }]]);
++
++describe("findQuoteBoxes", () => {
++  it("boxes the line a quote falls on, in PDF points from the top-left", async () => {
++    const [box, ...rest] = await findQuoteBoxes(bytes(), "  revenue GREW 12   percent ");
++    expect(rest).toEqual([]);
++    expect(box).toMatchObject({ text: "Revenue grew 12 percent in 2025.", page: 1, x0: 72, top: 92, bottom: 104 });
++    expect(box.x1).toBeCloseTo(255.432, 2);
++  });
++
++  it("gives one box per line for a quote across two lines", async () => {
++    expect((await findQuoteBoxes(bytes(), "page one. Revenue grew")).map((b) => b.top)).toEqual([76, 92]);
++  });
++
++  it("finds nothing for a quote that is not in the document", async () => {
++    expect(await findQuoteBoxes(bytes(), "Revenue fell")).toEqual([]);
++  });
++});
++
++describe("widgetPdf", () => {
++  it("takes the pdf item from the data source whose widget_uuid matches", () => {
++    expect(widgetPdf(messages, UUID)).toEqual({ content: PDF, url: undefined });
++    expect(widgetPdf(messages, "missing")).toBeNull();
++  });
++});
++
++describe("runCiteQuote", () => {
++  it("attaches the boxes to the cited widget", async () => {
++    const citedWidgets = cited();
++    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue grew 12 percent" }, { messages, citedWidgets })).toBe("Quote highlighted.");
++    expect(citedWidgets.get(KEY)?.quoteBoxes).toEqual([[expect.objectContaining({ page: 1, top: 92 })]]);
++  });
++
++  it("answers without an error and attaches nothing when the quote is not found", async () => {
++    const citedWidgets = cited();
++    expect(await runCiteQuote({ widget_uuid: UUID, quote: "Revenue fell" }, { messages, citedWidgets })).toBe("Noted.");
++    expect(citedWidgets.get(KEY)?.quoteBoxes).toBeUndefined();
++  });
++});
+diff --git a/tests/unit/src/protocol/citations.test.ts b/tests/unit/src/protocol/citations.test.ts
+index a5554f6..7fcb01a 100644
+--- a/tests/unit/src/protocol/citations.test.ts
++++ b/tests/unit/src/protocol/citations.test.ts
+@@ -244,3 +244,13 @@ describe("buildAllCitations", () => {
+     expect(await buildAllCitations(new Map(), [], [])).toEqual([]);
+   });
+ });
++
++describe("buildWidgetCitations quote boxes", () => {
++  it("carries a cited widget's quote boxes, and omits the field without them", async () => {
++    const box = { text: "t", page: 1, x0: 1, top: 2, x1: 3, bottom: 4 };
++    const [boxed] = await buildWidgetCitations(new Map([["u-1|{}", { widget: widget(), inputArgs: {}, widgetUuid: "u-1", quoteBoxes: [[box]] }]]));
++    expect(boxed.quote_bounding_boxes).toEqual([[box]]);
++    const [plain] = await buildWidgetCitations(new Map([["u-1|{}", { widget: widget(), inputArgs: {}, widgetUuid: "u-1" }]]));
++    expect("quote_bounding_boxes" in plain).toBe(false);
++  });
++});
+-- 
+2.54.0 (Apple Git-157)
+
