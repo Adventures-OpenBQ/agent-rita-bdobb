@@ -191,3 +191,9 @@ hint acceptance case. Outcome-based chart authoring accepts parameters applied
 by add_widget or a subsequent set_widget_params. A separate reconfiguration
 case still verifies set_widget_params. The injected-save case removes alternate
 creation/content tools so its intended rejected write must actually occur.
+
+## Qwen gateway default for the V6 release walk
+
+The qualified default is `openai:Qwen/Qwen3.6-35B-A3B` through an OpenAI-compatible managed Aperture route. Copy `rita-aperture-qwen.env.example` outside the repository, set your own gateway URL, and verify that exact model in `/v1/models` and a small inference request. Managed tailnet access can use the non-secret SDK placeholder; credential-passthrough providers still require their real private key. Hosted inference is billed by the configured provider.
+
+Patch 0020 keeps a configured model from an enabled provider in the advertised model picker, even when the gateway exposes models beyond Rita's built-in suggestions. Existing choices remain available and the default is not duplicated. A model whose provider is unavailable is not added.

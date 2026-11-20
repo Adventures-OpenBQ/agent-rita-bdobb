@@ -1,0 +1,18 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,13 +1,13 @@
+ # syntax=docker/dockerfile:1
+ 
+-FROM oven/bun:1-slim AS deps
++FROM oven/bun:1.4.5-slim@sha256:b780593f3e10918cbdaec3d5a08d52224b9198069a65eb47812085c2ec007643 AS deps
+ 
+ WORKDIR /app
+ 
+ COPY package.json bun.lock ./
+ RUN bun install --frozen-lockfile --production
+ 
+-FROM oven/bun:1-slim AS rita
++FROM oven/bun:1.4.5-slim@sha256:b780593f3e10918cbdaec3d5a08d52224b9198069a65eb47812085c2ec007643 AS rita
+ 
+ ENV NODE_ENV=production
+ ENV PORT=7777

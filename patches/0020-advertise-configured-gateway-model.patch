@@ -1,0 +1,39 @@
+--- a/src/lib/providers.ts
++++ b/src/lib/providers.ts
+@@ -185,7 +185,15 @@
+ }
+ 
+ export function allModels(): ModelEntry[] {
+-  return providers.flatMap((p) => p.models);
++  const models = providers.flatMap((p) => p.models);
++  const configured = process.env.DEFAULT_MODEL;
++  // Gateways can expose model IDs beyond the built-in suggestions. Keep the
++  // configured default selectable without advertising an unavailable provider.
++  const provider = configured && providers.find((p) => configured.startsWith(`${p.prefix}:`));
++  if (configured && provider && configured.slice(provider.prefix.length + 1).trim() && !models.some((m) => m.id === configured)) {
++    models.unshift({ id: configured, name: configured });
++  }
++  return models;
+ }
+ 
+ const logger = getLogger(["app", "providers"]);
+--- /dev/null
++++ b/tests/integration/configured-model-picker.test.ts
+@@ -0,0 +1,17 @@
++import { expect, it } from 'bun:test';
++
++async function picker(env: Record<string,string>) {
++  const code = `import { agentsRouter } from './src/routes/agents.ts'; const r=await agentsRouter.request('/agents.json');console.log('MODEL_PICKER '+JSON.stringify((await r.json()).openbb_agent_rita.features.model));`;
++  const p=Bun.spawn([process.execPath,'-e',code],{cwd:process.cwd(),stdout:'pipe',stderr:'pipe',env:{PATH:process.env.PATH,NODE_ENV:'test',OPENAI_API_KEY:'tailscale-aperture',OPENAI_BASE_URL:'http://127.0.0.1:1/v1',OPENROUTER_API_KEY:'',GROQ_API_KEY:'',ANTHROPIC_API_KEY:'',ANTHROPIC_BASE_URL:'',...env}});
++  const [out,err,status]=await Promise.all([new Response(p.stdout).text(),new Response(p.stderr).text(),p.exited]);expect(status,err).toBe(0);
++  return JSON.parse(out.split('\n').find(s=>s.startsWith('MODEL_PICKER '))!.slice(13)) as {default:string;options:{value:string;label:string}[]};
++}
++it('advertises the configured OpenAI-compatible gateway model as a selectable default',async()=>{
++  const id='openai:Qwen/Qwen3.6-35B-A3B';const p=await picker({DEFAULT_MODEL:id});expect(p.default).toBe(id);expect(p.options.filter(x=>x.value===id)).toHaveLength(1);
++});
++it('does not duplicate an already advertised configured model',async()=>{
++  const p=await picker({DEFAULT_MODEL:'openai:gpt-4o'});expect(p.options.filter(x=>x.value==='openai:gpt-4o')).toHaveLength(1);
++});
++it('does not advertise a configured model for an unavailable provider',async()=>{
++  const p=await picker({DEFAULT_MODEL:'anthropic:unavailable'});expect(p.options.some(x=>x.value==='anthropic:unavailable')).toBe(false);
++});

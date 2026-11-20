@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${WORK_DIR:-$ROOT/build/rita}"
-TEST_IMAGE="${TEST_IMAGE:-oven/bun:1.4.4-slim}"
+TEST_IMAGE="${TEST_IMAGE:-oven/bun:1.4.5-slim@sha256:b780593f3e10918cbdaec3d5a08d52224b9198069a65eb47812085c2ec007643}"
 [ -f "$WORK/package.json" ] || { echo "Run scripts/build.sh --check-only first" >&2; exit 2; }
 args=(--rm --memory 2g --label com.adventures.audit=rita-aperture --mount "type=bind,source=$WORK,target=/app" --workdir /app)
 # Dependencies live only in this generated Linux checkout. Provider tests use
