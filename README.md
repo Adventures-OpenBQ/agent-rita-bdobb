@@ -197,3 +197,5 @@ creation/content tools so its intended rejected write must actually occur.
 The qualified default is `openai:Qwen/Qwen3.6-35B-A3B` through an OpenAI-compatible managed Aperture route. Copy `rita-aperture-qwen.env.example` outside the repository, set your own gateway URL, and verify that exact model in `/v1/models` and a small inference request. Managed tailnet access can use the non-secret SDK placeholder; credential-passthrough providers still require their real private key. Hosted inference is billed by the configured provider.
 
 Patch 0020 keeps a configured model from an enabled provider in the advertised model picker, even when the gateway exposes models beyond Rita's built-in suggestions. Existing choices remain available and the default is not duplicated. A model whose provider is unavailable is not added.
+
+Feedback from patch0015 is appended under `/data/feedback.jsonl`. Patch0022 creates this directory for the unprivileged `bun` user. Mount a dedicated named volume at `/data` to retain feedback across container replacement; the Episode6 Compose recipe provides that volume. This application data is separate from provider credentials and caches.
