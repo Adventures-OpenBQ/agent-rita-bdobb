@@ -164,10 +164,10 @@ to enable the table suite, then run:
 pnpm exec vitest run src/test/integration/rita-live.test.ts \
   src/test/integration/rita-authoring-live.test.ts \
   src/test/integration/rita-table-model-live.test.ts \
-  --maxWorkers=1 --minWorkers=1 --testTimeout=300000
+  --maxWorkers=1 --testTimeout=300000
 ```
 
-There are 18 tests at the audited BDOBB revision. They use real model requests,
+The number of tests depends on the BDOBB revision. These suites use real model requests,
 in-memory dashboard stores, and a reference data backend. They do not qualify
 all helper endpoints, native UI, physical devices, or a release by themselves.
 
@@ -185,8 +185,8 @@ The native application's provider aggregation hints start in v9.0.0; their
 entity-category guidance and transactional refusal belong in v9 and later,
 not in v6–v8. Table-model tools themselves already exist in v6.
 
-Test the native source for the target version, not a later checkout. V6 has17
-live tests across chat, authoring and table-model suites; v9 adds the provider
+Test the native source for the target version, not a later checkout. The current V6
+release walk runs 25 live checks including the helper suite; v9 adds the provider
 hint acceptance case. Outcome-based chart authoring accepts parameters applied
 by add_widget or a subsequent set_widget_params. A separate reconfiguration
 case still verifies set_widget_params. The injected-save case removes alternate
