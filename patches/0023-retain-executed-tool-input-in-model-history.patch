@@ -1,0 +1,98 @@
+--- a/src/agent/messages.ts
++++ b/src/agent/messages.ts
+@@ -2,7 +2,7 @@
+ import type { QueryRequest, ToolMessage, WorkspaceState } from "../protocol/types";
+ import { buildSystemPrompt, type PromptOptions } from "./prompt";
+ import { stripPlaceholderTags } from "../protocol/events";
+-import { renderToolResultForHistory } from "../mcp/results";
++import { renderToolResultForHistory, toolInputReceipt } from "../mcp/results";
+ import { WORKSPACE_BRIDGE_COMMAND_NAMES } from "../protocol/bridge-commands";
+ 
+ export interface BuildMessagesOptions extends PromptOptions {
+@@ -114,7 +114,7 @@
+         const toolName = typeof rawName === "string" ? rawName : "unknown";
+         messages.push({
+           role: "user",
+-          content: `Earlier tool result from ${toolName}:\n\n${rendered}`,
++          content: `Earlier tool result from ${toolName}:\n${toolInputReceipt(toolMsg)}\n\n${rendered}`,
+         });
+       }
+     } else if (
+--- a/src/mcp/results.ts
++++ b/src/mcp/results.ts
+@@ -8,6 +8,16 @@
+ import { getLogger } from "../lib/logger";
+ 
+ const logger = getLogger(["app", "mcp", "results"]);
++
++/** Correlate a completed call with its output without carrying internal state. */
++export function toolInputReceipt(toolMsg: ToolMessage): string {
++  const args = toolMsg.input_arguments;
++  const server = typeof args?.server_id === "string" ? args.server_id.slice(0, 200) : "unknown";
++  let input = JSON.stringify(args?.parameters ?? {});
++  if (input.length > 4096) input = input.slice(0, 4096) + "… [input truncated]";
++  return `Executed on server ${server} with parameters: ${input}`;
++}
++
+ 
+ export interface WebCitation {
+   id: string;
+@@ -369,7 +379,7 @@
+   if (llmContent !== null) {
+     ctx.messages.push({
+       role: "user" as const,
+-      content: `MCP tool result from ${toolName}:\n\n${llmContent}`,
++      content: `MCP tool result from ${toolName}:\n${toolInputReceipt(toolMsg)}\n\n${llmContent}`,
+     });
+   }
+ 
+--- a/tests/unit/src/agent/messages.test.ts
++++ b/tests/unit/src/agent/messages.test.ts
+@@ -148,6 +148,19 @@
+       data: [{ items }],
+     };
+   }
++
++  it("retains executed note input and outcome in earlier history without merging identical calls", () => {
++    const call = { ...mcpToolMsg("add_note", [{ text: '{"added":true,"card_id":"card-1"}' }]),
++      input_arguments: { server_id: "bdobb-local", tool_name: "add_note", parameters: { text: "Unique executed note" } } };
++    const out = buildMessages(req({ messages: [call, call, { role: "human", content: "next" }] as unknown as LooseMessages }));
++    const receipts = out.filter((m) => typeof m.content === "string" && m.content.includes("Earlier tool result from add_note"));
++    expect(receipts).toHaveLength(2);
++    for (const receipt of receipts) {
++      expect(receipt.content).toContain("bdobb-local");
++      expect(receipt.content).toContain("Unique executed note");
++      expect(receipt.content).toContain("card-1");
++    }
++  });
+ 
+   it("renders earlier execute_agent_tool results (artifact ack + text), skipping the live last one", () => {
+     const earlier = mcpToolMsg("execute_code", [
+--- a/tests/unit/src/mcp/results.test.ts
++++ b/tests/unit/src/mcp/results.test.ts
+@@ -34,6 +34,25 @@
+ });
+ 
+ describe("processMcpResult — plain text", () => {
++  it("correlates a live mutation receipt with its bounded input, not internal state", () => {
++    const ctx = freshCtx();
++    const call = toolMsg([{ text: '{"added":true,"card_id":"card-1"}' }], "add_note");
++    call.input_arguments = { server_id: "bdobb-local", tool_name: "add_note", parameters: { text: "Unique executed note" } };
++    Object.assign(call, { extra_state: { internal_secret: "INTERNAL-STATE-SENTINEL" } });
++    processMcpResult(call, ctx);
++    expect(ctx.messages).toHaveLength(1);
++    expect(ctx.messages[0].content).not.toContain("INTERNAL-STATE-SENTINEL");
++    expect(ctx.messages[0].content).toContain("bdobb-local");
++    expect(ctx.messages[0].content).toContain("Unique executed note");
++    expect(ctx.messages[0].content).toContain("card-1");
++    const bounded = freshCtx();
++    call.input_arguments.parameters = { text: "x".repeat(100_000) };
++    processMcpResult(call, bounded);
++    expect(String(bounded.messages[0].content).length).toBeLessThan(6000);
++    expect(bounded.messages[0].content).toContain("truncated");
++    expect(bounded.messages[0].content).toContain("card-1");
++  });
++
+   it("injects plain text as a user message", () => {
+     const ctx = freshCtx();
+     const summary = processMcpResult(toolMsg([{ text: "hello world" }]), ctx);

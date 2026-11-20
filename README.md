@@ -24,6 +24,12 @@ The recipe for the Rita agent that BDOBB talks to in Adventures in OpenBQ (Episo
 | 0017 | Send a PDF's extracted text, not a file part, so OpenAI-compatible model servers (vLLM) can read it |
 | 0018 | `cite_quote` keeps the PDF's source beside the widget cache entry so a cache-served PDF can still be highlighted |
 
+| 0019 | Preserve real provider exports in the query test mock |
+| 0020 | Advertise the configured model for an enabled compatible provider |
+| 0021 | Pin the qualified Bun runtime and test image by digest |
+| 0022 | Create the feedback directory for the unprivileged runtime user |
+| 0023 | Retain bounded executed tool inputs beside both live and earlier model-facing results |
+
 There is no 0005; it was a compose file, which this recipe does not carry.
 
 ## Build
